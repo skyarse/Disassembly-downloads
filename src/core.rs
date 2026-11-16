@@ -516,7 +516,10 @@ impl Engine {
             }
         }
         let value = Snapshot::read(path)?;
-        ensure!(value.stamp == *stamp, "Файл изменился во время предпросмотра");
+        ensure!(
+            value.stamp == *stamp,
+            "Файл изменился во время предпросмотра"
+        );
         self.snapshots.insert(path.to_path_buf(), value.clone());
         Ok(value)
     }
