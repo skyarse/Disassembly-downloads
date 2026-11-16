@@ -1,5 +1,6 @@
 import hashlib
 import json
+import os
 import pathlib
 import urllib.request
 
@@ -9,9 +10,12 @@ for repository, name in [
     ("linuxdeploy/linuxdeploy", "linuxdeploy-x86_64.AppImage"),
     ("linuxdeploy/linuxdeploy-plugin-qt", "linuxdeploy-plugin-qt-x86_64.AppImage"),
 ]:
+    headers = {"Accept": "application/vnd.github+json", "User-Agent": "downloads-triage-build"}
+    if os.environ.get("GH_TOKEN"):
+        headers["Authorization"] = "Bearer " + os.environ["GH_TOKEN"]
     request = urllib.request.Request(
         f"https://api.github.com/repos/{repository}/releases/tags/continuous",
-        headers={"Accept": "application/vnd.github+json", "User-Agent": "downloads-triage-build"},
+        headers=headers,
     )
     with urllib.request.urlopen(request) as response:
         release = json.load(response)

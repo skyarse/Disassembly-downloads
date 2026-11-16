@@ -3,6 +3,9 @@ mod core;
 
 use cxx_qt_lib::{QGuiApplication, QQmlApplicationEngine, QUrl};
 fn main() {
+    if std::env::var_os("APPIMAGE").is_some() {
+        std::env::set_var("QT_QUICK_CONTROLS_STYLE", "Fusion");
+    }
     let mut app = QGuiApplication::new();
     let mut engine = QQmlApplicationEngine::new();
     let Some(engine) = engine.as_mut() else {

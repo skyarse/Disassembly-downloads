@@ -127,7 +127,7 @@ ApplicationWindow {
         interval: 15000
         running: !appState.first_run
         repeat: true
-        onTriggered: if (!busy && tabs.currentIndex === 0 && !Object.keys(selected).length && !ruleDialog.visible && !moveConfirm.visible && !folders.visible) send({op: "scan"})
+        onTriggered: if (!busy && tabs.currentIndex === 0 && !Object.keys(selected).length && !Object.keys(destinations).length && !ruleDialog.visible && !moveConfirm.visible && !folders.visible) send({op: "scan"})
     }
     Timer {
         interval: 2500

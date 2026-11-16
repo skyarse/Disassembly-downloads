@@ -45,6 +45,8 @@ jobs:
       - name: Smoke test QML
         run: bash scripts/smoke.sh
       - name: Package AppImage
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: bash scripts/package.sh
       - name: Smoke test packaged AppImage on Wayland
         run: APPIMAGE_EXTRACT_AND_RUN=1 bash scripts/smoke.sh dist/Downloads-Triage-x86_64.AppImage
