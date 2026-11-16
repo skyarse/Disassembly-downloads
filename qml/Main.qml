@@ -140,7 +140,7 @@ ApplicationWindow {
             }
             let screenshot = Qt.application.arguments.indexOf("--screenshot")
             if (screenshot >= 0) {
-                window.contentItem.grabToImage(function(result) {
+                page.grabToImage(function(result) {
                     if (!result.saveToFile(Qt.application.arguments[screenshot + 1])) console.error("SCREENSHOT_FAILED")
                     console.log("QML_READY queue=" + (window.appState.queue ? window.appState.queue.length : 0))
                     Qt.quit()
@@ -315,6 +315,7 @@ ApplicationWindow {
     }
 
     ColumnLayout {
+        id: page
         anchors.fill: parent
         anchors.margins: 16
         spacing: 12
