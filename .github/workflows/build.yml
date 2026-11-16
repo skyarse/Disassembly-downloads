@@ -1,0 +1,51 @@
+name: Build and test AppImage
+on:
+  push:
+    branches: [dev]
+  pull_request:
+    branches: [main, dev]
+permissions:
+  contents: read
+concurrency:
+  group: build-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  linux:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      QMAKE: /usr/bin/qmake6
+      QT_VERSION_MAJOR: 6
+      CARGO_TERM_COLOR: never
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Qt and build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential lld pkg-config ripgrep qt6-base-dev qt6-declarative-dev qt6-svg-dev qt6-wayland qml6-module-qtquick-controls qml6-module-qtquick-layouts qml6-module-qtquick-dialogs qml6-module-qtqml-workerscript qml6-module-qtquick-templates qml6-module-qtquick-window qml6-module-qtqml-models libgl1-mesa-dev libxkbcommon-dev libxcb-cursor0 libfuse2t64
+      - name: Install pinned Rust
+        run: rustup show active-toolchain
+      - name: Bootstrap formatting and dependency lock
+        run: |
+          cargo generate-lockfile
+          cargo fmt --all
+          python3 - <<'PY'
+          import json, pathlib
+          files = ["Cargo.lock", "build.rs"] + [str(p) for p in pathlib.Path("src").glob("*.rs")]
+          print("BOOTSTRAP_JSON=" + json.dumps({p: pathlib.Path(p).read_text() for p in files}))
+          PY
+      - name: Test file operations
+        run: cargo test --locked
+      - name: Build desktop application
+        run: cargo build --release --locked
+      - name: Smoke test QML
+        run: bash scripts/smoke.sh
+      - name: Package AppImage
+        run: bash scripts/package.sh
+      - name: Upload development AppImage
+        uses: actions/upload-artifact@v4
+        with:
+          name: downloads-triage-x86_64-${{ github.sha }}
+          path: dist/
+          if-no-files-found: error
+          retention-days: 30
