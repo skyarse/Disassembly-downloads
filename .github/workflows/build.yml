@@ -19,21 +19,25 @@ jobs:
       CARGO_TERM_COLOR: never
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/cache/restore@v4
+        id: rust-cache
+        with:
+          path: |
+            target
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-${{ runner.arch }}-rust-1.90-qt6-${{ hashFiles('Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-${{ runner.arch }}-rust-1.90-qt6-
       - name: Install Qt and build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential lld pkg-config ripgrep qt6-base-dev qt6-declarative-dev qt6-svg-dev qt6-wayland qml6-module-qtquick-controls qml6-module-qtquick-layouts qml6-module-qtquick-dialogs qml6-module-qtqml-workerscript qml6-module-qtquick-templates qml6-module-qtquick-window qml6-module-qtqml-models libgl1-mesa-dev libxkbcommon-dev libxcb-cursor0 libfuse2t64
+          sudo apt-get install -y build-essential lld pkg-config ripgrep qt6-base-dev qt6-declarative-dev qt6-svg-dev qt6-wayland qml6-module-qtquick qml6-module-qtquick-controls qml6-module-qtquick-layouts qml6-module-qtquick-dialogs qml6-module-qtqml-workerscript qml6-module-qtquick-templates qml6-module-qtquick-window qml6-module-qtqml-models libgl1-mesa-dev libxkbcommon-dev libxcb-cursor0 libfuse2t64 weston dbus-x11
       - name: Install pinned Rust
         run: rustup show active-toolchain
-      - name: Bootstrap formatting and dependency lock
+      - name: Check formatting and frozen dependencies
         run: |
-          cargo generate-lockfile
-          cargo fmt --all
-          python3 - <<'PY'
-          import json, pathlib
-          files = ["Cargo.lock", "build.rs"] + [str(p) for p in pathlib.Path("src").glob("*.rs")]
-          print("BOOTSTRAP_JSON=" + json.dumps({p: pathlib.Path(p).read_text() for p in files}))
-          PY
+          cargo fmt --all -- --check
+          cargo metadata --locked --format-version=1 > /dev/null
       - name: Test file operations
         run: cargo test --locked
       - name: Build desktop application
@@ -42,6 +46,11 @@ jobs:
         run: bash scripts/smoke.sh
       - name: Package AppImage
         run: bash scripts/package.sh
+      - name: Smoke test packaged AppImage on Wayland
+        run: APPIMAGE_EXTRACT_AND_RUN=1 bash scripts/smoke.sh dist/Downloads-Triage-x86_64.AppImage
+      - name: Verify artifact checksum
+        working-directory: dist
+        run: sha256sum --check SHA256SUMS
       - name: Upload development AppImage
         uses: actions/upload-artifact@v4
         with:
@@ -49,3 +58,11 @@ jobs:
           path: dist/
           if-no-files-found: error
           retention-days: 30
+      - uses: actions/cache/save@v4
+        if: always() && steps.rust-cache.outputs.cache-hit != 'true'
+        with:
+          path: |
+            target
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ steps.rust-cache.outputs.cache-primary-key }}

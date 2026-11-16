@@ -20,6 +20,7 @@ ApplicationWindow {
     property string folderPurpose: ""
     property string folderToken: ""
     property var moveItems: []
+    property var pendingDecision: null
     property string notice: "Загрузка настроек…"
 
     function send(command) {
@@ -68,8 +69,17 @@ ApplicationWindow {
     }
     function ruleFromDecision(row) {
         let folder = target(row)
-        let category = config.categories.find(c => c.folder === folder)
-        if (!category) { notice = "Сначала добавьте категорию с этой папкой во вкладке «Категории»."; return }
+        let relative = folder.indexOf(config.root + "/") === 0 ? folder.slice(config.root.length + 1) : folder
+        let category = config.categories.find(c => c.folder === folder || c.folder === relative)
+        if (!category) {
+            pendingDecision = {name: row.name, destination: folder}
+            categoryDialog.categoryIndex = -1
+            categoryDialog.categoryId = "category-" + Date.now()
+            categoryName.text = relative.split("/").filter(x => x.length).pop() || ""
+            categoryFolder.text = relative
+            categoryDialog.open()
+            return
+        }
         editRule(-1, null)
         ruleName.text = row.name
         pattern.text = row.name.replace(/([*?[\]{}\\])/g, "\\$1")
@@ -101,6 +111,11 @@ ApplicationWindow {
                 ruleDialog.matchesText = response.error || (response.matches.length ? response.matches.join("\n") : "Совпадений нет.")
             }
             if (response.first_run) tabs.currentIndex = 4
+            if (window.pendingDecision && !categoryDialog.visible && !response.error) {
+                let decision = window.pendingDecision
+                window.pendingDecision = null
+                ruleFromDecision(decision)
+            }
         }
         function responseValue() { return backend.response }
     }
@@ -116,8 +131,17 @@ ApplicationWindow {
         interval: 2500
         running: Qt.application.arguments.indexOf("--smoke-test") >= 0
         onTriggered: {
-            console.log("QML_READY queue=" + (state.queue ? state.queue.length : 0))
-            Qt.quit()
+            let screenshot = Qt.application.arguments.indexOf("--screenshot")
+            if (screenshot >= 0) {
+                window.contentItem.grabToImage(function(result) {
+                    if (!result.saveToFile(Qt.application.arguments[screenshot + 1])) console.error("SCREENSHOT_FAILED")
+                    console.log("QML_READY queue=" + (window.state.queue ? window.state.queue.length : 0))
+                    Qt.quit()
+                })
+            } else {
+                console.log("QML_READY queue=" + (state.queue ? state.queue.length : 0))
+                Qt.quit()
+            }
         }
     }
     FolderDialog {
@@ -186,6 +210,7 @@ ApplicationWindow {
         modal: true
         width: 600
         standardButtons: Dialog.Save | Dialog.Cancel
+        onRejected: window.pendingDecision = null
         ColumnLayout {
             width: parent.width
             Label { text: "Название" }
@@ -347,7 +372,7 @@ ApplicationWindow {
                                 }
                                 Label { text: target(modelData) || "Папка не выбрана"; elide: Text.ElideMiddle; Layout.fillWidth: true }
                                 Button { text: "Папка…"; enabled: !busy; onClicked: chooseFolder("target", modelData.id) }
-                                Button { text: "Правило…"; enabled: !busy && !!target(modelData); onClicked: ruleFromDecision(modelData) }
+                                Button { text: "Создать правило…"; enabled: !busy && !!target(modelData); onClicked: ruleFromDecision(modelData) }
                                 Button { text: "Отложить"; enabled: !busy; onClicked: send({op: "defer", id: modelData.id}) }
                                 Button { text: "Перенести"; enabled: !busy && modelData.ready && !!target(modelData); onClicked: confirmMove([modelData]) }
                             }

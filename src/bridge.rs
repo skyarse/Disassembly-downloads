@@ -36,21 +36,33 @@ impl Default for BackendRust {
                     Ok(engine) => engine.command(&command),
                     Err(error) => serde_json::json!({"error": format!("{error:#}")}).to_string(),
                 };
-                if results.send(response).is_err() { break; }
+                if results.send(response).is_err() {
+                    break;
+                }
             }
         });
-        Self { response: QString::default(), sender, receiver }
+        Self {
+            response: QString::default(),
+            sender,
+            receiver,
+        }
     }
 }
 impl ffi::Backend {
     pub fn request(mut self: Pin<&mut Self>, command: &QString) {
         if self.rust().sender.try_send(command.to_string()).is_err() {
-            self.as_mut().set_response(QString::from("{\"error\":\"Очередь операций занята. Повторите действие.\"}"));
+            self.as_mut().set_response(QString::from(
+                "{\"error\":\"Очередь операций занята. Повторите действие.\"}",
+            ));
         }
     }
     pub fn poll(mut self: Pin<&mut Self>) {
         let mut latest = None;
-        while let Ok(value) = self.rust().receiver.try_recv() { latest = Some(value); }
-        if let Some(value) = latest { self.as_mut().set_response(QString::from(value.as_str())); }
+        while let Ok(value) = self.rust().receiver.try_recv() {
+            latest = Some(value);
+        }
+        if let Some(value) = latest {
+            self.as_mut().set_response(QString::from(value.as_str()));
+        }
     }
 }
