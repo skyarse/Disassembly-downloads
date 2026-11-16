@@ -31,6 +31,7 @@ settings = {
 PY
 export QT_QUICK_CONTROLS_STYLE=Fusion
 export QT_QUICK_BACKEND=software
+export QT_IM_MODULE=compose
 export WAYLAND_DISPLAY=wayland-smoke
 weston --backend=headless-backend.so --socket="$WAYLAND_DISPLAY" --idle-time=0 --width=1280 --height=800 > "$smoke_root/weston.log" 2>&1 &
 weston_pid=$!
