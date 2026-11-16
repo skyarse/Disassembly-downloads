@@ -58,4 +58,5 @@ fi
 smoke_pid=""
 cat "$smoke_root/qt.log"
 rg 'QML_READY' "$smoke_root/qt.log"
+rg 'UI_DIALOGS_READY' "$smoke_root/qt.log"
 if rg 'failed to load|is not installed|ReferenceError|TypeError|Binding loop|Cannot assign|SCREENSHOT_FAILED|UI_SMOKE_FAILED' "$smoke_root/qt.log"; then exit 1; fi

@@ -130,7 +130,30 @@ ApplicationWindow {
         onTriggered: if (!busy && tabs.currentIndex === 0 && !Object.keys(selected).length && !Object.keys(destinations).length && !ruleDialog.visible && !moveConfirm.visible && !folders.visible) send({op: "scan"})
     }
     Timer {
-        interval: 2500
+        property int step: 0
+        interval: 700
+        repeat: true
+        running: Qt.application.arguments.indexOf("--smoke-test") >= 0 && step < 4
+        onTriggered: {
+            if (step === 0) {
+                editRule(0, config.rules[0])
+                ruleCategory.popup.open()
+            } else if (step === 1) {
+                ruleCategory.popup.close()
+                ruleDialog.close()
+                chooseFolder("target", appState.queue[0].id)
+            } else if (step === 2) {
+                folders.close()
+                importFile.open()
+            } else {
+                importFile.close()
+                console.log("UI_DIALOGS_READY")
+            }
+            step += 1
+        }
+    }
+    Timer {
+        interval: 4000
         running: Qt.application.arguments.indexOf("--smoke-test") >= 0
         onTriggered: {
             if (busy || appState.error || queueList.count !== 2 || rulesList.count !== 1 || categoriesList.count !== 1) {
@@ -185,7 +208,7 @@ ApplicationWindow {
         title: "Заменить настройки?"
         modal: true
         standardButtons: Dialog.Ok | Dialog.Cancel
-        Label { text: "Категории, правила и папка будут заменены после проверки JSON.\nСами файлы останутся на месте."; wrapMode: Text.Wrap }
+        Label { textFormat: Text.PlainText; text: "Категории, правила и папка будут заменены после проверки JSON.\nСами файлы останутся на месте."; wrapMode: Text.Wrap }
         onAccepted: send({op: "import", path: localPath(importFile.selectedFile)})
     }
     Dialog {
@@ -220,9 +243,9 @@ ApplicationWindow {
         onRejected: window.pendingDecision = null
         ColumnLayout {
             width: parent.width
-            Label { text: "Название" }
+            Label { textFormat: Text.PlainText; text: "Название" }
             TextField { id: categoryName; Layout.fillWidth: true }
-            Label { text: "Подпапка: относительный путь или полный путь внутри загрузок" }
+            Label { textFormat: Text.PlainText; text: "Подпапка: относительный путь или полный путь внутри загрузок" }
             RowLayout {
                 TextField { id: categoryFolder; Layout.fillWidth: true; placeholderText: "Аниме/Название" }
                 Button { text: "Выбрать…"; onClicked: chooseFolder("category", "") }
@@ -250,19 +273,24 @@ ApplicationWindow {
         closePolicy: Popup.CloseOnEscape
         ColumnLayout {
             width: parent.width
-            Label { text: "Название" }
+            Label { textFormat: Text.PlainText; text: "Название" }
             TextField { id: ruleName; Layout.fillWidth: true; onTextEdited: ruleDialog.tested = false }
-            Label { text: "Расширения через запятую; пусто — любые" }
+            Label { textFormat: Text.PlainText; text: "Расширения через запятую; пусто — любые" }
             TextField { id: extensions; Layout.fillWidth: true; placeholderText: "mkv, mp4"; onTextEdited: ruleDialog.tested = false }
-            Label { text: "Шаблон имени (* — любой текст, ? — один символ); регистр не важен" }
+            Label { textFormat: Text.PlainText; text: "Шаблон имени (* — любой текст, ? — один символ); регистр не важен" }
             TextField { id: pattern; Layout.fillWidth: true; placeholderText: "Screenshot*.png"; onTextEdited: ruleDialog.tested = false }
-            Label { text: "Если заполнены оба поля, должны совпасть оба условия."; wrapMode: Text.Wrap }
+            Label { textFormat: Text.PlainText; text: "Если заполнены оба поля, должны совпасть оба условия."; wrapMode: Text.Wrap }
             RowLayout {
-                ComboBox { id: ruleCategory; Layout.fillWidth: true; model: config.categories; textRole: "name"; onActivated: ruleDialog.tested = false }
+                ComboBox { id: ruleCategory; Layout.fillWidth: true; model: config.categories; textRole: "name"; delegate: ItemDelegate {
+                                    required property var modelData
+                                    required property int index
+                                    width: ListView.view ? ListView.view.width : 190
+                                    contentItem: Label { textFormat: Text.PlainText; text: modelData.name; elide: Text.ElideRight }
+                                } onActivated: ruleDialog.tested = false }
                 ComboBox { id: ruleAction; model: ["Переместить", "Предложить"] }
                 CheckBox { id: ruleActive; text: "Активно" }
             }
-            Label { text: "Первое совпадение побеждает. Новое правило добавится первым.\nВ этой версии оба действия требуют ручного подтверждения."; wrapMode: Text.Wrap }
+            Label { textFormat: Text.PlainText; text: "Первое совпадение побеждает. Новое правило добавится первым.\nВ этой версии оба действия требуют ручного подтверждения."; wrapMode: Text.Wrap }
             Button {
                 text: "Проверить совпадения"
                 enabled: !busy
@@ -303,7 +331,7 @@ ApplicationWindow {
         standardButtons: Dialog.Save | Dialog.Cancel
         ColumnLayout {
             width: parent.width
-            Label { text: "Файлы, совпавшие с исключением, не попадают в очередь."; wrapMode: Text.Wrap }
+            Label { textFormat: Text.PlainText; text: "Файлы, совпавшие с исключением, не попадают в очередь."; wrapMode: Text.Wrap }
             TextField { id: exclusionExt; Layout.fillWidth: true; placeholderText: "Расширения: bak, log" }
             TextField { id: exclusionPattern; Layout.fillWidth: true; placeholderText: "Шаблон: keep-*" }
         }
@@ -314,209 +342,219 @@ ApplicationWindow {
         }
     }
 
-    ColumnLayout {
+    Item {
         id: page
         anchors.fill: parent
-        anchors.margins: 16
-        spacing: 12
-        RowLayout {
-            Label { text: "Загрузки на разбор"; font.pixelSize: 26; font.bold: true; Layout.fillWidth: true }
-            Label { text: "Ручной режим"; opacity: 0.7 }
-            BusyIndicator { running: busy; visible: busy; Layout.preferredWidth: 30; Layout.preferredHeight: 30 }
-        }
-        Label { text: config.root; elide: Text.ElideMiddle; Layout.fillWidth: true; opacity: 0.75 }
-        TabBar {
-            id: tabs
-            Layout.fillWidth: true
-            TabButton { text: "Очередь (" + (appState.queue ? appState.queue.length : 0) + ")" }
-            TabButton { text: "Правила" }
-            TabButton { text: "Категории" }
-            TabButton { text: "История" }
-            TabButton { text: "Настройки" }
-        }
-        StackLayout {
-            currentIndex: tabs.currentIndex
-            Layout.fillWidth: true
-            Layout.fillHeight: true
-            ColumnLayout {
-                RowLayout {
-                    Button { text: "Обновить"; enabled: !busy; onClicked: send({op: "scan"}) }
-                    Button { text: "Вернуть отложенные"; enabled: !busy; onClicked: send({op: "show_deferred"}) }
-                    Item { Layout.fillWidth: true }
-                    Button {
-                        text: "Подтвердить выбранные"
-                        enabled: !busy && Object.keys(selected).length > 0
-                        onClicked: confirmMove(appState.queue.filter(row => selected[row.id]))
-                    }
-                }
-                ListView {
-                    id: queueList
-                    Layout.fillWidth: true
-                    Layout.fillHeight: true
-                    spacing: 8
-                    clip: true
-                    model: appState.queue || []
-                    ScrollBar.vertical: ScrollBar {}
-                    delegate: Frame {
-                        required property var modelData
-                        width: queueList.width - 12
-                        ColumnLayout {
-                            width: parent.width
-                            RowLayout {
-                                CheckBox { enabled: modelData.ready && !busy; checked: !!selected[modelData.id]; onToggled: select(modelData, checked) }
-                                Label { text: modelData.name; font.bold: true; elide: Text.ElideMiddle; Layout.fillWidth: true }
-                                Label { text: (modelData.size / 1048576).toFixed(2) + " МБ"; opacity: 0.7 }
-                            }
-                            Label { text: modelData.reason; wrapMode: Text.Wrap; Layout.fillWidth: true }
-                            RowLayout {
-                                ComboBox {
-                                    Layout.preferredWidth: 190
-                                    model: config.categories
-                                    textRole: "name"
-                                    currentIndex: config.categories.findIndex(c => c.folder === target(modelData))
-                                    displayText: currentIndex >= 0 ? config.categories[currentIndex].name : "Выберите категорию"
-                                    enabled: !busy
-                                    onActivated: { let value = copy(destinations); value[modelData.id] = config.categories[currentIndex].folder; destinations = value }
-                                }
-                                Label { text: target(modelData) || "Папка не выбрана"; elide: Text.ElideMiddle; Layout.fillWidth: true }
-                                Button { text: "Папка…"; enabled: !busy; onClicked: chooseFolder("target", modelData.id) }
-                                Button { text: "Создать правило…"; enabled: !busy && !!target(modelData); onClicked: ruleFromDecision(modelData) }
-                                Button { text: "Отложить"; enabled: !busy; onClicked: send({op: "defer", id: modelData.id}) }
-                                Button { text: "Перенести"; enabled: !busy && modelData.ready && !!target(modelData); onClicked: confirmMove([modelData]) }
-                            }
-                        }
-                    }
-                    Label { anchors.centerIn: parent; visible: queueList.count === 0; text: "Очередь пуста. Подпапки и временные загрузки пропускаются."; wrapMode: Text.Wrap }
-                }
+        Rectangle { anchors.fill: parent; color: window.palette.window }
+        ColumnLayout {
+            anchors.fill: parent
+            anchors.margins: 16
+            spacing: 12
+            RowLayout {
+                Label { textFormat: Text.PlainText; text: "Загрузки на разбор"; font.pixelSize: 26; font.bold: true; Layout.fillWidth: true }
+                Label { textFormat: Text.PlainText; text: "Ручной режим"; opacity: 0.7 }
+                BusyIndicator { running: busy; visible: busy; Layout.preferredWidth: 30; Layout.preferredHeight: 30 }
             }
-            ColumnLayout {
-                Button { text: "Добавить правило"; enabled: !busy && config.categories.length > 0; onClicked: editRule(-1, null) }
-                ListView {
-                    id: rulesList
-                    Layout.fillWidth: true
-                    Layout.fillHeight: true
-                    spacing: 6
-                    clip: true
-                    model: config.rules
-                    ScrollBar.vertical: ScrollBar {}
-                    delegate: Frame {
-                        required property var modelData
-                        required property int index
-                        width: rulesList.width - 12
-                        RowLayout {
-                            width: parent.width
-                            CheckBox {
-                                checked: modelData.active
-                                enabled: !busy
-                                onToggled: { let value = copy(config); value.rules[index].active = checked; saveConfig(value) }
-                            }
-                            ColumnLayout {
-                                Layout.fillWidth: true
-                                Label { text: (index + 1) + ". " + modelData.name; font.bold: true }
-                                Label { text: (modelData.condition.pattern || "*") + "  ·  " + (modelData.condition.extensions.join(", ") || "любые расширения"); elide: Text.ElideMiddle; Layout.fillWidth: true }
-                            }
-                            Button { text: "↑"; enabled: !busy && index > 0; onClicked: { let value = copy(config); let rule = value.rules.splice(index, 1)[0]; value.rules.splice(index - 1, 0, rule); saveConfig(value) } }
-                            Button { text: "↓"; enabled: !busy && index + 1 < config.rules.length; onClicked: { let value = copy(config); let rule = value.rules.splice(index, 1)[0]; value.rules.splice(index + 1, 0, rule); saveConfig(value) } }
-                            Button { text: "Изменить"; enabled: !busy; onClicked: editRule(index, modelData) }
-                            Button { text: "Удалить"; enabled: !busy; onClicked: { let value = copy(config); value.rules.splice(index, 1); saveConfig(value) } }
-                        }
-                    }
-                }
+            Label { textFormat: Text.PlainText; text: config.root; elide: Text.ElideMiddle; Layout.fillWidth: true; opacity: 0.75 }
+            TabBar {
+                id: tabs
+                Layout.fillWidth: true
+                TabButton { text: "Очередь (" + (appState.queue ? appState.queue.length : 0) + ")" }
+                TabButton { text: "Правила" }
+                TabButton { text: "Категории" }
+                TabButton { text: "История" }
+                TabButton { text: "Настройки" }
             }
-            ColumnLayout {
-                Button {
-                    text: "Добавить категорию"
-                    enabled: !busy
-                    onClicked: { categoryDialog.categoryIndex = -1; categoryDialog.categoryId = "category-" + Date.now(); categoryName.text = ""; categoryFolder.text = ""; categoryDialog.open() }
-                }
-                ListView {
-                    id: categoriesList
-                    Layout.fillWidth: true
-                    Layout.fillHeight: true
-                    clip: true
-                    spacing: 6
-                    model: config.categories
-                    delegate: Frame {
-                        required property var modelData
-                        required property int index
-                        width: categoriesList.width - 12
-                        RowLayout {
-                            width: parent.width
-                            Label { text: modelData.name + " → " + modelData.folder; Layout.fillWidth: true; elide: Text.ElideMiddle }
-                            Button { text: "Изменить"; enabled: !busy; onClicked: { categoryDialog.categoryIndex = index; categoryDialog.categoryId = modelData.id; categoryName.text = modelData.name; categoryFolder.text = modelData.folder; categoryDialog.open() } }
-                            Button { text: "Удалить"; enabled: !busy && !config.rules.some(r => r.category_id === modelData.id); onClicked: { let value = copy(config); value.categories.splice(index, 1); saveConfig(value) } }
-                        }
-                    }
-                    ScrollBar.vertical: ScrollBar {}
-                }
-                Label { text: "Для удаления используемой категории сначала измените или удалите связанные правила."; wrapMode: Text.Wrap; Layout.fillWidth: true }
-            }
-            ColumnLayout {
-                Label { text: "Последние 500 операций. Время указано в UTC."; opacity: 0.7 }
-                ListView {
-                    id: historyList
-                    Layout.fillWidth: true
-                    Layout.fillHeight: true
-                    clip: true
-                    spacing: 6
-                    model: appState.history || []
-                    ScrollBar.vertical: ScrollBar {}
-                    delegate: Frame {
-                        required property var modelData
-                        width: historyList.width - 12
-                        RowLayout {
-                            width: parent.width
-                            ColumnLayout {
-                                Layout.fillWidth: true
-                                Label { text: modelData.created + " · " + stateName(modelData.state); font.bold: true }
-                                Label { text: modelData.source; elide: Text.ElideMiddle; Layout.fillWidth: true }
-                                Label { text: "→ " + modelData.destination; elide: Text.ElideMiddle; Layout.fillWidth: true }
-                                Label { text: modelData.message; visible: !!modelData.message; wrapMode: Text.Wrap; Layout.fillWidth: true }
-                            }
-                            Button { text: "Отменить"; enabled: !busy && modelData.state === "moved"; onClicked: send({op: "undo", id: modelData.id}) }
-                        }
-                    }
-                }
-            }
-            ScrollView {
-                clip: true
+            StackLayout {
+                currentIndex: tabs.currentIndex
+                Layout.fillWidth: true
+                Layout.fillHeight: true
                 ColumnLayout {
-                    width: parent.width
-                    spacing: 14
-                    Label { text: "Папка загрузок"; font.bold: true }
                     RowLayout {
-                        TextField { id: rootField; Layout.fillWidth: true; placeholderText: "/home/user/Downloads" }
-                        Button { text: "Выбрать…"; enabled: !busy; onClicked: chooseFolder("root", "") }
-                        Button { text: "Сохранить"; enabled: !busy; onClicked: { let value = copy(config); value.root = rootField.text; saveConfig(value) } }
+                        Button { text: "Обновить"; enabled: !busy; onClicked: send({op: "scan"}) }
+                        Button { text: "Вернуть отложенные"; enabled: !busy; onClicked: send({op: "show_deferred"}) }
+                        Item { Layout.fillWidth: true }
+                        Button {
+                            text: "Подтвердить выбранные"
+                            enabled: !busy && Object.keys(selected).length > 0
+                            onClicked: confirmMove(appState.queue.filter(row => selected[row.id]))
+                        }
                     }
-                    Label { text: "Обходится только верхний уровень. Назначение — подпапка на том же диске.\nПроверка каждые 15 секунд во вкладке очереди. Автоматическое перемещение ещё не включено."; wrapMode: Text.Wrap; Layout.fillWidth: true }
-                    RowLayout {
-                        Button { text: "Импорт JSON…"; enabled: !busy; onClicked: importFile.open() }
-                        Button { text: "Экспорт JSON…"; enabled: !busy; onClicked: exportFile.open() }
+                    ListView {
+                        id: queueList
+                        Layout.fillWidth: true
+                        Layout.fillHeight: true
+                        spacing: 8
+                        clip: true
+                        model: appState.queue || []
+                        ScrollBar.vertical: ScrollBar {}
+                        delegate: Frame {
+                            required property var modelData
+                            width: queueList.width - 12
+                            ColumnLayout {
+                                width: parent.width
+                                RowLayout {
+                                    CheckBox { enabled: modelData.ready && !busy; checked: !!selected[modelData.id]; onToggled: select(modelData, checked) }
+                                    Label { textFormat: Text.PlainText; text: modelData.name; font.bold: true; elide: Text.ElideMiddle; Layout.fillWidth: true }
+                                    Label { textFormat: Text.PlainText; text: (modelData.size / 1048576).toFixed(2) + " МБ"; opacity: 0.7 }
+                                }
+                                Label { textFormat: Text.PlainText; text: modelData.reason; wrapMode: Text.Wrap; Layout.fillWidth: true }
+                                RowLayout {
+                                    ComboBox {
+                                        Layout.preferredWidth: 190
+                                        model: config.categories
+                                        textRole: "name"
+                                        delegate: ItemDelegate {
+                                        required property var modelData
+                                        required property int index
+                                        width: ListView.view ? ListView.view.width : 190
+                                        contentItem: Label { textFormat: Text.PlainText; text: modelData.name; elide: Text.ElideRight }
+                                    }
+                                        currentIndex: config.categories.findIndex(c => c.folder === target(modelData))
+                                        displayText: currentIndex >= 0 ? config.categories[currentIndex].name : "Выберите категорию"
+                                        enabled: !busy
+                                        onActivated: { let value = copy(destinations); value[modelData.id] = config.categories[currentIndex].folder; destinations = value }
+                                    }
+                                    Label { textFormat: Text.PlainText; text: target(modelData) || "Папка не выбрана"; elide: Text.ElideMiddle; Layout.fillWidth: true }
+                                    Button { text: "Папка…"; enabled: !busy; onClicked: chooseFolder("target", modelData.id) }
+                                    Button { text: "Создать правило…"; enabled: !busy && !!target(modelData); onClicked: ruleFromDecision(modelData) }
+                                    Button { text: "Отложить"; enabled: !busy; onClicked: send({op: "defer", id: modelData.id}) }
+                                    Button { text: "Перенести"; enabled: !busy && modelData.ready && !!target(modelData); onClicked: confirmMove([modelData]) }
+                                }
+                            }
+                        }
+                        Label { textFormat: Text.PlainText; anchors.centerIn: parent; visible: queueList.count === 0; text: "Очередь пуста. Подпапки и временные загрузки пропускаются."; wrapMode: Text.Wrap }
                     }
-                    Label { text: "Исключения проверяются перед правилами"; font.bold: true }
-                    Button { text: "Добавить исключение"; enabled: !busy; onClicked: { exclusionExt.text = ""; exclusionPattern.text = ""; exclusionDialog.open() } }
-                    Repeater {
-                        model: config.exclusions
-                        RowLayout {
+                }
+                ColumnLayout {
+                    Button { text: "Добавить правило"; enabled: !busy && config.categories.length > 0; onClicked: editRule(-1, null) }
+                    ListView {
+                        id: rulesList
+                        Layout.fillWidth: true
+                        Layout.fillHeight: true
+                        spacing: 6
+                        clip: true
+                        model: config.rules
+                        ScrollBar.vertical: ScrollBar {}
+                        delegate: Frame {
                             required property var modelData
                             required property int index
-                            Label { text: (modelData.pattern || "*") + " · " + (modelData.extensions.join(", ") || "любые расширения"); Layout.fillWidth: true }
-                            Button { text: "Удалить"; enabled: !busy; onClicked: { let value = copy(config); value.exclusions.splice(index, 1); saveConfig(value) } }
+                            width: rulesList.width - 12
+                            RowLayout {
+                                width: parent.width
+                                CheckBox {
+                                    checked: modelData.active
+                                    enabled: !busy
+                                    onToggled: { let value = copy(config); value.rules[index].active = checked; saveConfig(value) }
+                                }
+                                ColumnLayout {
+                                    Layout.fillWidth: true
+                                    Label { textFormat: Text.PlainText; text: (index + 1) + ". " + modelData.name; font.bold: true }
+                                    Label { textFormat: Text.PlainText; text: (modelData.condition.pattern || "*") + "  ·  " + (modelData.condition.extensions.join(", ") || "любые расширения"); elide: Text.ElideMiddle; Layout.fillWidth: true }
+                                }
+                                Button { text: "↑"; enabled: !busy && index > 0; onClicked: { let value = copy(config); let rule = value.rules.splice(index, 1)[0]; value.rules.splice(index - 1, 0, rule); saveConfig(value) } }
+                                Button { text: "↓"; enabled: !busy && index + 1 < config.rules.length; onClicked: { let value = copy(config); let rule = value.rules.splice(index, 1)[0]; value.rules.splice(index + 1, 0, rule); saveConfig(value) } }
+                                Button { text: "Изменить"; enabled: !busy; onClicked: editRule(index, modelData) }
+                                Button { text: "Удалить"; enabled: !busy; onClicked: { let value = copy(config); value.rules.splice(index, 1); saveConfig(value) } }
+                            }
                         }
                     }
-                    Label { text: "О приложении"; font.bold: true }
-                    Label {
-                        text: "Загрузки на разбор · 0.1.0, предварительная версия\nGPL-3.0-only. Приложение предоставляется без гарантий.\nИсходники: https://github.com/skyarse/Disassembly-downloads\nRust + CXX-Qt + Qt 6; настройки JSON, журнал SQLite. Сетевых запросов нет."
-                        wrapMode: Text.Wrap
+                }
+                ColumnLayout {
+                    Button {
+                        text: "Добавить категорию"
+                        enabled: !busy
+                        onClicked: { categoryDialog.categoryIndex = -1; categoryDialog.categoryId = "category-" + Date.now(); categoryName.text = ""; categoryFolder.text = ""; categoryDialog.open() }
+                    }
+                    ListView {
+                        id: categoriesList
                         Layout.fillWidth: true
+                        Layout.fillHeight: true
+                        clip: true
+                        spacing: 6
+                        model: config.categories
+                        delegate: Frame {
+                            required property var modelData
+                            required property int index
+                            width: categoriesList.width - 12
+                            RowLayout {
+                                width: parent.width
+                                Label { textFormat: Text.PlainText; text: modelData.name + " → " + modelData.folder; Layout.fillWidth: true; elide: Text.ElideMiddle }
+                                Button { text: "Изменить"; enabled: !busy; onClicked: { categoryDialog.categoryIndex = index; categoryDialog.categoryId = modelData.id; categoryName.text = modelData.name; categoryFolder.text = modelData.folder; categoryDialog.open() } }
+                                Button { text: "Удалить"; enabled: !busy && !config.rules.some(r => r.category_id === modelData.id); onClicked: { let value = copy(config); value.categories.splice(index, 1); saveConfig(value) } }
+                            }
+                        }
+                        ScrollBar.vertical: ScrollBar {}
+                    }
+                    Label { textFormat: Text.PlainText; text: "Для удаления используемой категории сначала измените или удалите связанные правила."; wrapMode: Text.Wrap; Layout.fillWidth: true }
+                }
+                ColumnLayout {
+                    Label { textFormat: Text.PlainText; text: "Последние 500 операций. Время указано в UTC."; opacity: 0.7 }
+                    ListView {
+                        id: historyList
+                        Layout.fillWidth: true
+                        Layout.fillHeight: true
+                        clip: true
+                        spacing: 6
+                        model: appState.history || []
+                        ScrollBar.vertical: ScrollBar {}
+                        delegate: Frame {
+                            required property var modelData
+                            width: historyList.width - 12
+                            RowLayout {
+                                width: parent.width
+                                ColumnLayout {
+                                    Layout.fillWidth: true
+                                    Label { textFormat: Text.PlainText; text: modelData.created + " · " + stateName(modelData.state); font.bold: true }
+                                    Label { textFormat: Text.PlainText; text: modelData.source; elide: Text.ElideMiddle; Layout.fillWidth: true }
+                                    Label { textFormat: Text.PlainText; text: "→ " + modelData.destination; elide: Text.ElideMiddle; Layout.fillWidth: true }
+                                    Label { textFormat: Text.PlainText; text: modelData.message; visible: !!modelData.message; wrapMode: Text.Wrap; Layout.fillWidth: true }
+                                }
+                                Button { text: "Отменить"; enabled: !busy && modelData.state === "moved"; onClicked: send({op: "undo", id: modelData.id}) }
+                            }
+                        }
+                    }
+                }
+                ScrollView {
+                    clip: true
+                    ColumnLayout {
+                        width: parent.width
+                        spacing: 14
+                        Label { textFormat: Text.PlainText; text: "Папка загрузок"; font.bold: true }
+                        RowLayout {
+                            TextField { id: rootField; Layout.fillWidth: true; placeholderText: "/home/user/Downloads" }
+                            Button { text: "Выбрать…"; enabled: !busy; onClicked: chooseFolder("root", "") }
+                            Button { text: "Сохранить"; enabled: !busy; onClicked: { let value = copy(config); value.root = rootField.text; saveConfig(value) } }
+                        }
+                        Label { textFormat: Text.PlainText; text: "Обходится только верхний уровень. Назначение — подпапка на том же диске.\nПроверка каждые 15 секунд во вкладке очереди. Автоматическое перемещение ещё не включено."; wrapMode: Text.Wrap; Layout.fillWidth: true }
+                        RowLayout {
+                            Button { text: "Импорт JSON…"; enabled: !busy; onClicked: importFile.open() }
+                            Button { text: "Экспорт JSON…"; enabled: !busy; onClicked: exportFile.open() }
+                        }
+                        Label { textFormat: Text.PlainText; text: "Исключения проверяются перед правилами"; font.bold: true }
+                        Button { text: "Добавить исключение"; enabled: !busy; onClicked: { exclusionExt.text = ""; exclusionPattern.text = ""; exclusionDialog.open() } }
+                        Repeater {
+                            model: config.exclusions
+                            RowLayout {
+                                required property var modelData
+                                required property int index
+                                Label { textFormat: Text.PlainText; text: (modelData.pattern || "*") + " · " + (modelData.extensions.join(", ") || "любые расширения"); Layout.fillWidth: true }
+                                Button { text: "Удалить"; enabled: !busy; onClicked: { let value = copy(config); value.exclusions.splice(index, 1); saveConfig(value) } }
+                            }
+                        }
+                        Label { textFormat: Text.PlainText; text: "О приложении"; font.bold: true }
+                        Label { textFormat: Text.PlainText;
+                            text: "Загрузки на разбор · 0.1.0, предварительная версия\nGPL-3.0-only. Приложение предоставляется без гарантий.\nИсходники: https://github.com/skyarse/Disassembly-downloads\nRust + CXX-Qt + Qt 6; настройки JSON, журнал SQLite. Сетевых запросов нет."
+                            wrapMode: Text.Wrap
+                            Layout.fillWidth: true
+                        }
                     }
                 }
             }
-        }
-        Frame {
-            Layout.fillWidth: true
-            Label { width: parent.width; text: notice; wrapMode: Text.Wrap; color: appState.error ? "#d65f5f" : palette.text }
+            Frame {
+                Layout.fillWidth: true
+                Label { textFormat: Text.PlainText; width: parent.width; text: notice; wrapMode: Text.Wrap; color: appState.error ? "#d65f5f" : palette.text }
+            }
         }
     }
 }
