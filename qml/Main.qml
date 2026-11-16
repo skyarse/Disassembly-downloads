@@ -275,21 +275,21 @@ ApplicationWindow {
         ColumnLayout {
             width: parent.width
             Label { textFormat: Text.PlainText; text: "Название" }
-            TextField { id: ruleName; Layout.fillWidth: true; onTextEdited: ruleDialog.tested = false }
+            TextField { id: ruleName; enabled: !busy; Layout.fillWidth: true; onTextEdited: ruleDialog.tested = false }
             Label { textFormat: Text.PlainText; text: "Расширения через запятую; пусто — любые" }
-            TextField { id: extensions; Layout.fillWidth: true; placeholderText: "mkv, mp4"; onTextEdited: ruleDialog.tested = false }
+            TextField { id: extensions; enabled: !busy; Layout.fillWidth: true; placeholderText: "mkv, mp4"; onTextEdited: ruleDialog.tested = false }
             Label { textFormat: Text.PlainText; text: "Шаблон имени (* — любой текст, ? — один символ); регистр не важен" }
-            TextField { id: pattern; Layout.fillWidth: true; placeholderText: "Screenshot*.png"; onTextEdited: ruleDialog.tested = false }
+            TextField { id: pattern; enabled: !busy; Layout.fillWidth: true; placeholderText: "Screenshot*.png"; onTextEdited: ruleDialog.tested = false }
             Label { textFormat: Text.PlainText; text: "Если заполнены оба поля, должны совпасть оба условия."; wrapMode: Text.Wrap }
             RowLayout {
-                ComboBox { id: ruleCategory; Layout.fillWidth: true; model: config.categories; textRole: "name"; delegate: ItemDelegate {
+                ComboBox { id: ruleCategory; enabled: !busy; Layout.fillWidth: true; model: config.categories; textRole: "name"; delegate: ItemDelegate {
                                     required property var modelData
                                     required property int index
                                     width: ListView.view ? ListView.view.width : 190
                                     contentItem: Label { textFormat: Text.PlainText; text: modelData.name; elide: Text.ElideRight }
                                 } onActivated: ruleDialog.tested = false }
-                ComboBox { id: ruleAction; model: ["Переместить", "Предложить"] }
-                CheckBox { id: ruleActive; text: "Активно" }
+                ComboBox { id: ruleAction; enabled: !busy; model: ["Переместить", "Предложить"] }
+                CheckBox { id: ruleActive; enabled: !busy; text: "Активно" }
             }
             Label { textFormat: Text.PlainText; text: "Первое совпадение побеждает. Новое правило добавится первым.\nВ этой версии оба действия требуют ручного подтверждения."; wrapMode: Text.Wrap }
             Button {
@@ -523,7 +523,7 @@ ApplicationWindow {
                         spacing: 14
                         Label { textFormat: Text.PlainText; text: "Папка загрузок"; font.bold: true }
                         RowLayout {
-                            TextField { id: rootField; Layout.fillWidth: true; placeholderText: "/home/user/Downloads" }
+                            TextField { id: rootField; enabled: !busy; Layout.fillWidth: true; placeholderText: "/home/user/Downloads" }
                             Button { text: "Выбрать…"; enabled: !busy; onClicked: chooseFolder("root", "") }
                             Button { text: "Сохранить"; enabled: !busy; onClicked: { let value = copy(config); value.root = rootField.text; saveConfig(value) } }
                         }
