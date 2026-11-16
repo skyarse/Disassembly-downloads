@@ -152,7 +152,10 @@ impl Config {
                     active: true,
                 },
             ],
-            exclusions: Vec::new(),
+            exclusions: vec![Condition {
+                extensions: Vec::new(),
+                pattern: ".*".into(),
+            }],
         }
     }
     pub fn validate(&self) -> Result<()> {
@@ -301,6 +304,7 @@ pub struct Engine {
     _lock: File,
     pending: HashMap<String, Pending>,
     observed: HashMap<PathBuf, (Stamp, Instant)>,
+    snapshots: HashMap<PathBuf, Snapshot>,
     queue: Vec<Value>,
     sequence: u64,
     message: String,
@@ -326,17 +330,16 @@ fn temporary(path: &Path) -> bool {
         .unwrap_or_default()
         .to_string_lossy()
         .to_lowercase();
-    name.starts_with('.')
-        || [
-            ".part",
-            ".crdownload",
-            ".download",
-            ".tmp",
-            ".partial",
-            ".aria2",
-        ]
-        .iter()
-        .any(|e| name.ends_with(e))
+    [
+        ".part",
+        ".crdownload",
+        ".download",
+        ".tmp",
+        ".partial",
+        ".aria2",
+    ]
+    .iter()
+    .any(|e| name.ends_with(e))
 }
 fn safe_destination(root: &Path, input: &Path, create: bool) -> Result<PathBuf> {
     let relative = if input.is_absolute() {
@@ -463,6 +466,7 @@ impl Engine {
             _lock: lock,
             pending: HashMap::new(),
             observed: HashMap::new(),
+            snapshots: HashMap::new(),
             queue: Vec::new(),
             sequence: 0,
             message: String::new(),
@@ -498,11 +502,23 @@ impl Engine {
         sync_dir(self.config_path.parent().unwrap())?;
         if self.config.root != config.root {
             self.observed.clear();
+            self.snapshots.clear();
         }
         self.config = config;
         self.first_run = false;
         self.pending.clear();
         Ok(())
+    }
+    fn snapshot(&mut self, path: &Path, stamp: &Stamp) -> Result<Snapshot> {
+        if let Some(value) = self.snapshots.get(path) {
+            if value.stamp == *stamp {
+                return Ok(value.clone());
+            }
+        }
+        let value = Snapshot::read(path)?;
+        ensure!(value.stamp == *stamp, "Файл изменился во время предпросмотра");
+        self.snapshots.insert(path.to_path_buf(), value.clone());
+        Ok(value)
     }
     fn scan_at(&mut self, now: Instant) -> Result<()> {
         self.config.validate()?;
@@ -568,7 +584,7 @@ impl Engine {
                 "Нет подходящего правила".into()
             };
             let snapshot = if stable {
-                match Snapshot::read(&path) {
+                match self.snapshot(&path, &Stamp::of(&meta)) {
                     Ok(value) => Some(value),
                     Err(error) => {
                         reason = format!("{error:#}");
@@ -585,6 +601,7 @@ impl Engine {
             self.pending.insert(token, Pending { path, snapshot });
         }
         self.observed.retain(|path, _| seen.contains(path));
+        self.snapshots.retain(|path, _| seen.contains(path));
         Ok(())
     }
     fn move_one(&mut self, token: &str, folder: &str) -> Result<()> {
@@ -1000,6 +1017,17 @@ mod tests {
         let mut config = engine.config.clone();
         config.root = temp.path().join("config");
         assert!(engine.persist(config).is_err());
+    }
+    #[test]
+    fn hidden_files_are_controlled_by_editable_exclusions() {
+        let (_temp, mut engine) = fixture();
+        fs::write(engine.config.root.join(".hidden.png"), b"data").unwrap();
+        engine.scan_at(Instant::now()).unwrap();
+        assert!(engine.queue.is_empty());
+        engine.config.exclusions.clear();
+        let token = ready(&mut engine);
+        engine.move_one(&token, "Картинки").unwrap();
+        assert!(engine.config.root.join("Картинки/.hidden.png").exists());
     }
     #[test]
     fn another_instance_cannot_open_the_same_journal() {

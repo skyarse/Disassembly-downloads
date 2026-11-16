@@ -31,7 +31,7 @@ jobs:
       - name: Install Qt and build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential lld pkg-config ripgrep qt6-base-dev qt6-declarative-dev qt6-svg-dev qt6-wayland qml6-module-qtquick qml6-module-qtquick-controls qml6-module-qtquick-layouts qml6-module-qtquick-dialogs qml6-module-qtqml-workerscript qml6-module-qtquick-templates qml6-module-qtquick-window qml6-module-qtqml-models libgl1-mesa-dev libxkbcommon-dev libxcb-cursor0 libfuse2t64 weston dbus-x11
+          sudo apt-get install -y build-essential lld pkg-config ripgrep qt6-base-dev qt6-declarative-dev qt6-svg-dev qt6-wayland qml6-module-qtquick qml6-module-qtquick-controls qml6-module-qtquick-layouts qml6-module-qtquick-dialogs qml6-module-qtqml-workerscript qml6-module-qtquick-templates qml6-module-qtquick-window qml6-module-qtqml-models libgl1-mesa-dev libxkbcommon-dev libxcb-cursor0 libfuse2t64 weston dbus-x11 gdb
       - name: Install pinned Rust
         run: rustup show active-toolchain
       - name: Check formatting and frozen dependencies
@@ -48,6 +48,14 @@ jobs:
         run: bash scripts/package.sh
       - name: Smoke test packaged AppImage on Wayland
         run: APPIMAGE_EXTRACT_AND_RUN=1 bash scripts/smoke.sh dist/Downloads-Triage-x86_64.AppImage
+      - name: Capture UI preview
+        run: |
+          python3 - <<'PY'
+          import base64, pathlib
+          data = base64.b64encode(pathlib.Path("dist/screenshot.png").read_bytes()).decode()
+          for index in range(0, len(data), 32000):
+              print("UI_PREVIEW_BASE64=" + data[index:index + 32000])
+          PY
       - name: Verify artifact checksum
         working-directory: dist
         run: sha256sum --check SHA256SUMS

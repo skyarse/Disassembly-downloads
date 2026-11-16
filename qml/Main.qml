@@ -12,7 +12,7 @@ ApplicationWindow {
     minimumHeight: 570
     visible: true
     title: "Загрузки на разбор"
-    property var state: ({queue: [], history: [], matches: []})
+    property var appState: ({queue: [], history: [], matches: []})
     property var config: ({root: "", categories: [], rules: [], exclusions: []})
     property bool busy: false
     property var selected: ({})
@@ -95,8 +95,9 @@ ApplicationWindow {
             let response
             try { response = JSON.parse(responseValue()) } catch (error) { busy = false; notice = "Ошибка ответа: " + error; return }
             window.busy = false
+            let wasFirstRun = !!window.appState.first_run
             if (response.config) {
-                window.state = response
+                window.appState = response
                 window.config = response.config
                 rootField.text = response.config.root
                 window.selected = ({})
@@ -111,6 +112,7 @@ ApplicationWindow {
                 ruleDialog.matchesText = response.error || (response.matches.length ? response.matches.join("\n") : "Совпадений нет.")
             }
             if (response.first_run) tabs.currentIndex = 4
+            else if (wasFirstRun) tabs.currentIndex = 0
             if (window.pendingDecision && !categoryDialog.visible && !response.error) {
                 let decision = window.pendingDecision
                 window.pendingDecision = null
@@ -123,7 +125,7 @@ ApplicationWindow {
     Timer { interval: 100; running: true; repeat: true; onTriggered: backend.poll() }
     Timer {
         interval: 15000
-        running: !state.first_run
+        running: !appState.first_run
         repeat: true
         onTriggered: if (!busy && tabs.currentIndex === 0 && !Object.keys(selected).length && !ruleDialog.visible && !moveConfirm.visible && !folders.visible) send({op: "scan"})
     }
@@ -131,15 +133,20 @@ ApplicationWindow {
         interval: 2500
         running: Qt.application.arguments.indexOf("--smoke-test") >= 0
         onTriggered: {
+            if (busy || appState.error || queueList.count !== 2 || rulesList.count !== 1 || categoriesList.count !== 1) {
+                console.error("UI_SMOKE_FAILED " + JSON.stringify(appState))
+                Qt.quit()
+                return
+            }
             let screenshot = Qt.application.arguments.indexOf("--screenshot")
             if (screenshot >= 0) {
                 window.contentItem.grabToImage(function(result) {
                     if (!result.saveToFile(Qt.application.arguments[screenshot + 1])) console.error("SCREENSHOT_FAILED")
-                    console.log("QML_READY queue=" + (window.state.queue ? window.state.queue.length : 0))
+                    console.log("QML_READY queue=" + (window.appState.queue ? window.appState.queue.length : 0))
                     Qt.quit()
                 })
             } else {
-                console.log("QML_READY queue=" + (state.queue ? state.queue.length : 0))
+                console.log("QML_READY queue=" + (appState.queue ? appState.queue.length : 0))
                 Qt.quit()
             }
         }
@@ -320,7 +327,7 @@ ApplicationWindow {
         TabBar {
             id: tabs
             Layout.fillWidth: true
-            TabButton { text: "Очередь (" + (state.queue ? state.queue.length : 0) + ")" }
+            TabButton { text: "Очередь (" + (appState.queue ? appState.queue.length : 0) + ")" }
             TabButton { text: "Правила" }
             TabButton { text: "Категории" }
             TabButton { text: "История" }
@@ -338,7 +345,7 @@ ApplicationWindow {
                     Button {
                         text: "Подтвердить выбранные"
                         enabled: !busy && Object.keys(selected).length > 0
-                        onClicked: confirmMove(state.queue.filter(row => selected[row.id]))
+                        onClicked: confirmMove(appState.queue.filter(row => selected[row.id]))
                     }
                 }
                 ListView {
@@ -347,7 +354,7 @@ ApplicationWindow {
                     Layout.fillHeight: true
                     spacing: 8
                     clip: true
-                    model: state.queue || []
+                    model: appState.queue || []
                     ScrollBar.vertical: ScrollBar {}
                     delegate: Frame {
                         required property var modelData
@@ -451,7 +458,7 @@ ApplicationWindow {
                     Layout.fillHeight: true
                     clip: true
                     spacing: 6
-                    model: state.history || []
+                    model: appState.history || []
                     ScrollBar.vertical: ScrollBar {}
                     delegate: Frame {
                         required property var modelData
@@ -508,7 +515,7 @@ ApplicationWindow {
         }
         Frame {
             Layout.fillWidth: true
-            Label { width: parent.width; text: notice; wrapMode: Text.Wrap; color: state.error ? "#d65f5f" : palette.text }
+            Label { width: parent.width; text: notice; wrapMode: Text.Wrap; color: appState.error ? "#d65f5f" : palette.text }
         }
     }
 }

@@ -8,7 +8,7 @@ export PATH="$PWD/tools:$PATH"
 export QMAKE=/usr/bin/qmake6
 export QML_SOURCES_PATHS="$PWD/qml"
 export EXTRA_PLATFORM_PLUGINS="libqwayland-egl.so;libqwayland-generic.so"
-export EXTRA_QT_MODULES="Svg"
+export EXTRA_QT_MODULES="svg;waylandcompositor"
 export OUTPUT="$PWD/dist/Downloads-Triage-x86_64.AppImage"
 python3 scripts/licenses.py
 tools/linuxdeploy-x86_64.AppImage --appdir AppDir --executable target/release/downloads-triage --desktop-file packaging/net.skyarse.DownloadsTriage.desktop --icon-file packaging/net.skyarse.DownloadsTriage.svg --plugin qt --output appimage
