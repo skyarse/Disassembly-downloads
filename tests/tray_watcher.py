@@ -15,6 +15,18 @@ class Watcher(dbus.service.Object):
         super().__init__(bus, '/StatusNotifierWatcher')
         self.items = []
 
+    @dbus.service.method('org.freedesktop.DBus.Introspectable', in_signature='', out_signature='s')
+    def Introspect(self):
+        return '''<node><interface name="org.kde.StatusNotifierWatcher">
+        <method name="RegisterStatusNotifierItem"><arg direction="in" type="s"/></method>
+        <method name="RegisterStatusNotifierHost"><arg direction="in" type="s"/></method>
+        <signal name="StatusNotifierItemRegistered"><arg type="s"/></signal>
+        <signal name="StatusNotifierHostRegistered"/>
+        <property name="RegisteredStatusNotifierItems" type="as" access="read"/>
+        <property name="IsStatusNotifierHostRegistered" type="b" access="read"/>
+        <property name="ProtocolVersion" type="i" access="read"/>
+        </interface></node>'''
+
     @dbus.service.method('org.kde.StatusNotifierWatcher', in_signature='s', out_signature='', sender_keyword='sender')
     def RegisterStatusNotifierItem(self, item, sender=None):
         address = str(sender) + str(item) if str(item).startswith('/') else str(item) + '/StatusNotifierItem'
