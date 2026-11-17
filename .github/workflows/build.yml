@@ -31,7 +31,7 @@ jobs:
       - name: Install Qt and build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential lld pkg-config ripgrep qt6-base-dev qt6-declarative-dev qt6-svg-dev qt6-wayland qml6-module-qtquick qml6-module-qtquick-controls qml6-module-qtquick-layouts qml6-module-qtquick-dialogs qml6-module-qt-labs-folderlistmodel qml6-module-qtqml-workerscript qml6-module-qtquick-templates qml6-module-qtquick-window qml6-module-qtqml-models libgl1-mesa-dev libxkbcommon-dev libxcb-cursor0 libfuse2t64 weston dbus-x11 gdb
+          sudo apt-get install -y build-essential lld pkg-config ripgrep qt6-base-dev qt6-declarative-dev qt6-svg-dev qt6-wayland qml6-module-qtquick qml6-module-qtquick-controls qml6-module-qtquick-layouts qml6-module-qtquick-dialogs qml6-module-qt-labs-folderlistmodel qml6-module-qt-labs-platform qml6-module-qtqml-workerscript qml6-module-qtquick-templates qml6-module-qtquick-window qml6-module-qtqml-models libgl1-mesa-dev libxkbcommon-dev libxcb-cursor0 libfuse2t64 weston dbus-x11 gdb python3-dbus python3-gi
       - name: Install pinned Rust
         run: rustup toolchain install 1.90.0 --profile minimal --component rustfmt --component clippy
       - name: Check formatting and frozen dependencies
@@ -50,6 +50,12 @@ jobs:
         run: bash scripts/package.sh
       - name: Smoke test packaged AppImage on Wayland
         run: APPIMAGE_EXTRACT_AND_RUN=1 bash scripts/smoke.sh dist/Downloads-Triage-x86_64.AppImage
+      - name: Check first-run layout at 150 percent scale
+        run: DOWNLOADS_UI_CASE=first-run QT_SCALE_FACTOR=1.5 APPIMAGE_EXTRACT_AND_RUN=1 bash scripts/smoke.sh dist/Downloads-Triage-x86_64.AppImage
+      - name: Check dark theme in a narrow window
+        run: DOWNLOADS_UI_CASE=dark APPIMAGE_EXTRACT_AND_RUN=1 bash scripts/smoke.sh dist/Downloads-Triage-x86_64.AppImage
+      - name: Verify unattended sorting while editing rules
+        run: DOWNLOADS_UI_CASE=automation APPIMAGE_EXTRACT_AND_RUN=1 bash scripts/smoke.sh dist/Downloads-Triage-x86_64.AppImage
       - name: Capture UI preview
         run: |
           python3 - <<'PY'

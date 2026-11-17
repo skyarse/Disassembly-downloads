@@ -18,6 +18,10 @@ use std::{
         },
     },
     path::{Component, Path, PathBuf},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
     time::{Duration, Instant},
 };
 
@@ -87,11 +91,32 @@ pub struct Config {
     pub categories: Vec<Category>,
     pub rules: Vec<Rule>,
     pub exclusions: Vec<Condition>,
+    #[serde(default = "manual_mode")]
+    pub mode: String,
+    #[serde(default = "system_theme")]
+    pub theme: String,
+    #[serde(default)]
+    pub autostart: bool,
+    #[serde(default = "legacy_setup_complete")]
+    pub setup_complete: bool,
+}
+fn manual_mode() -> String {
+    "manual".into()
+}
+fn system_theme() -> String {
+    "system".into()
+}
+fn legacy_setup_complete() -> bool {
+    true
 }
 impl Config {
     fn initial() -> Self {
         Self {
             version: 1,
+            mode: manual_mode(),
+            theme: system_theme(),
+            autostart: false,
+            setup_complete: false,
             root: dirs::download_dir()
                 .unwrap_or_else(|| dirs::home_dir().unwrap_or_default().join("Downloads")),
             categories: vec![
@@ -160,6 +185,14 @@ impl Config {
     }
     pub fn validate(&self) -> Result<()> {
         ensure!(self.version == 1, "Неподдерживаемая версия настроек");
+        ensure!(
+            ["manual", "automatic", "paused"].contains(&self.mode.as_str()),
+            "Неизвестный режим сортировки"
+        );
+        ensure!(
+            ["system", "light", "dark"].contains(&self.theme.as_str()),
+            "Неизвестная тема оформления"
+        );
         ensure!(
             self.root.is_absolute() && self.root.is_dir(),
             "Выберите существующую папку загрузок"
@@ -305,6 +338,8 @@ pub struct Engine {
     pending: HashMap<String, Pending>,
     observed: HashMap<PathBuf, (Stamp, Instant)>,
     snapshots: HashMap<PathBuf, Snapshot>,
+    tokens: HashMap<PathBuf, (Stamp, String)>,
+    pause_guard: Arc<AtomicBool>,
     queue: Vec<Value>,
     sequence: u64,
     message: String,
@@ -432,7 +467,9 @@ impl Engine {
         let state = dirs::data_local_dir()
             .context("Не найдена папка данных")?
             .join("downloads-triage");
-        Self::open(&config, &state)
+        let mut engine = Self::open(&config, &state)?;
+        engine.config.autostart = crate::autostart::enabled(&engine.autostart_directory()?);
+        Ok(engine)
     }
     fn open(config_directory: &Path, state: &Path) -> Result<Self> {
         fs::create_dir_all(config_directory)?;
@@ -447,12 +484,13 @@ impl Engine {
             .context("Приложение уже запущено")?;
         let config_path = config_directory.join("settings.json");
         let first_run = !config_path.exists();
-        let config = if first_run {
+        let config: Config = if first_run {
             Config::initial()
         } else {
             serde_json::from_slice(&fs::read(&config_path)?)
                 .context("Настройки повреждены; исходный файл сохранён")?
         };
+        let first_run = first_run || !config.setup_complete;
         let db = Connection::open(state.join("history.sqlite3"))?;
         db.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;
             CREATE TABLE IF NOT EXISTS operations(id INTEGER PRIMARY KEY, created TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, source BLOB NOT NULL, destination BLOB NOT NULL, snapshot TEXT NOT NULL, state TEXT NOT NULL, message TEXT NOT NULL DEFAULT '');
@@ -467,6 +505,8 @@ impl Engine {
             pending: HashMap::new(),
             observed: HashMap::new(),
             snapshots: HashMap::new(),
+            tokens: HashMap::new(),
+            pause_guard: Arc::new(AtomicBool::new(false)),
             queue: Vec::new(),
             sequence: 0,
             message: String::new(),
@@ -484,10 +524,34 @@ impl Engine {
         );
         Ok(())
     }
+    fn autostart_directory(&self) -> Result<PathBuf> {
+        Ok(self
+            .config_path
+            .parent()
+            .and_then(Path::parent)
+            .context("Не найдена папка автозапуска")?
+            .join("autostart"))
+    }
     fn persist(&mut self, mut config: Config) -> Result<()> {
         config.validate()?;
         config.root = config.root.canonicalize()?;
         self.validate_watch_root(&config.root)?;
+        if self.first_run || self.config.root != config.root {
+            config.mode = manual_mode();
+        }
+        config.setup_complete = true;
+        self.write_settings(&config)?;
+        if self.config.root != config.root {
+            self.observed.clear();
+            self.snapshots.clear();
+            self.tokens.clear();
+        }
+        self.config = config;
+        self.first_run = false;
+        self.pending.clear();
+        Ok(())
+    }
+    fn write_settings(&self, config: &Config) -> Result<()> {
         let temporary = self.config_path.with_extension("json.new");
         let mut file = OpenOptions::new()
             .write(true)
@@ -496,17 +560,10 @@ impl Engine {
             .custom_flags(libc::O_NOFOLLOW)
             .mode(0o600)
             .open(&temporary)?;
-        file.write_all(&serde_json::to_vec_pretty(&config)?)?;
+        file.write_all(&serde_json::to_vec_pretty(config)?)?;
         file.sync_all()?;
         fs::rename(&temporary, &self.config_path)?;
         sync_dir(self.config_path.parent().unwrap())?;
-        if self.config.root != config.root {
-            self.observed.clear();
-            self.snapshots.clear();
-        }
-        self.config = config;
-        self.first_run = false;
-        self.pending.clear();
         Ok(())
     }
     fn snapshot(&mut self, path: &Path, stamp: &Stamp) -> Result<Snapshot> {
@@ -535,7 +592,11 @@ impl Engine {
         paths.sort();
         let mut seen = HashSet::new();
         for path in paths {
-            let meta = fs::symlink_metadata(&path)?;
+            let meta = match fs::symlink_metadata(&path) {
+                Ok(metadata) => metadata,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(error) => return Err(error.into()),
+            };
             if !meta.is_file() || meta.file_type().is_symlink() || temporary(&path) {
                 continue;
             }
@@ -571,8 +632,9 @@ impl Engine {
                 self.config.decision(&path)
             };
             let destination = decision.map(|(_, c)| c.folder.clone()).unwrap_or_default();
+            let action = decision.map(|(r, _)| r.action.clone()).unwrap_or_default();
             let mut reason = if restored {
-                "Восстановлен: требуется ручное решение".into()
+                "Требуется ручное решение после отмены или ошибки".into()
             } else if let Some((rule, _)) = decision {
                 format!(
                     "{} · {}",
@@ -580,7 +642,7 @@ impl Engine {
                     if rule.action == "suggest" {
                         "Предложить"
                     } else {
-                        "Переместить после подтверждения"
+                        "Переместить"
                     }
                 )
             } else {
@@ -598,13 +660,97 @@ impl Engine {
                 reason = "Ожидание: минута без изменений с момента обнаружения".into();
                 None
             };
-            self.sequence += 1;
-            let token = self.sequence.to_string();
-            self.queue.push(json!({"id":token, "name":path.file_name().unwrap().to_string_lossy(), "path":path.to_string_lossy(), "size":meta.len(), "destination":destination, "reason":reason, "ready":snapshot.is_some()}));
+            let current_stamp = Stamp::of(&meta);
+            let token = match self.tokens.get(&path) {
+                Some((previous, token)) if previous == &current_stamp => token.clone(),
+                _ => {
+                    self.sequence += 1;
+                    let token = self.sequence.to_string();
+                    self.tokens
+                        .insert(path.clone(), (current_stamp, token.clone()));
+                    token
+                }
+            };
+            self.queue.push(json!({"id":token, "name":path.file_name().unwrap().to_string_lossy(), "path":path.to_string_lossy(), "size":meta.len(), "destination":destination, "reason":reason, "ready":snapshot.is_some(), "action":action, "manual_only":restored}));
             self.pending.insert(token, Pending { path, snapshot });
         }
         self.observed.retain(|path, _| seen.contains(path));
         self.snapshots.retain(|path, _| seen.contains(path));
+        self.tokens.retain(|path, _| seen.contains(path));
+        Ok(())
+    }
+    pub fn set_pause_guard(&mut self, guard: Arc<AtomicBool>) {
+        self.pause_guard = guard;
+    }
+    fn last_operation_id(&self) -> Result<i64> {
+        Ok(self
+            .db
+            .query_row("SELECT coalesce(max(id),0) FROM operations", [], |row| {
+                row.get(0)
+            })?)
+    }
+    fn automatic_moves(&mut self) -> Result<usize> {
+        if self.first_run || self.config.mode != "automatic" {
+            return Ok(0);
+        }
+        let candidates = self
+            .queue
+            .iter()
+            .filter(|row| {
+                row["ready"] == true && row["action"] == "move" && row["manual_only"] != true
+            })
+            .map(|row| {
+                (
+                    row["id"].as_str().unwrap().to_string(),
+                    row["destination"].as_str().unwrap().to_string(),
+                )
+            })
+            .collect::<Vec<_>>();
+        let mut moved = 0;
+        for (token, folder) in candidates {
+            if self.pause_guard.load(Ordering::Acquire) {
+                break;
+            }
+            let Some(pending) = self.pending.get(&token) else {
+                continue;
+            };
+            let source = pending.path.clone();
+            let snapshot = pending.snapshot.clone();
+            let last_id = self.last_operation_id()?;
+            match self.move_one(&token, &folder) {
+                Ok(()) => moved += 1,
+                Err(error) => {
+                    if self.last_operation_id()? == last_id {
+                        let target = self
+                            .config
+                            .root
+                            .join(&folder)
+                            .join(source.file_name().unwrap());
+                        self.db.execute("INSERT INTO operations(source,destination,snapshot,state,message) VALUES(?1,?2,?3,'error',?4)",
+                            params![bytes(&source), bytes(&target), serde_json::to_string(&snapshot)?, format!("{error:#}")])?;
+                    }
+                    self.db.execute(
+                        "INSERT OR IGNORE INTO manual_only(path) VALUES(?1)",
+                        params![bytes(&source)],
+                    )?;
+                }
+            }
+        }
+        Ok(moved)
+    }
+    fn tick_at(&mut self, now: Instant) -> Result<()> {
+        if self.first_run {
+            return Ok(());
+        }
+        self.scan_at(now)?;
+        let before = self.pending.len();
+        let moved = self.automatic_moves()?;
+        if self.pending.len() != before {
+            self.scan_at(now)?;
+        }
+        if moved > 0 {
+            self.message = format!("Автоматически перемещено: {moved}");
+        }
         Ok(())
     }
     fn move_one(&mut self, token: &str, folder: &str) -> Result<()> {
@@ -764,13 +910,61 @@ impl Engine {
     fn execute(&mut self, request: Value) -> Result<()> {
         self.rule_test.clear();
         match request["op"].as_str().unwrap_or("") {
-            "init" | "scan" => {
-                if !self.first_run {
-                    self.scan_at(Instant::now())?;
+            "init" | "scan" | "tick" => self.tick_at(Instant::now())?,
+            "set_theme" => {
+                let theme = request["theme"].as_str().context("Не указана тема")?;
+                ensure!(
+                    ["system", "light", "dark"].contains(&theme),
+                    "Неизвестная тема оформления"
+                );
+                let mut config = self.config.clone();
+                config.theme = theme.into();
+                self.write_settings(&config)?;
+                self.config = config;
+            }
+            "set_mode" => {
+                ensure!(
+                    !self.first_run,
+                    "Сначала выберите папку и просмотрите файлы"
+                );
+                let mut config = self.config.clone();
+                config.mode = request["mode"].as_str().context("Не указан режим")?.into();
+                self.persist(config)?;
+                self.pause_guard
+                    .store(self.config.mode != "automatic", Ordering::Release);
+                self.tick_at(Instant::now())?;
+            }
+            "set_autostart" => {
+                ensure!(!self.first_run, "Сначала сохраните папку загрузок");
+                let enabled = request["enabled"]
+                    .as_bool()
+                    .context("Не указан режим автозапуска")?;
+                let executable = match std::env::var_os("APPIMAGE") {
+                    Some(path) => PathBuf::from(path),
+                    None => std::env::current_exe()?,
+                };
+                let directory = self.autostart_directory()?;
+                let previous = self.config.autostart;
+                crate::autostart::set(&directory, &executable, enabled)?;
+                let mut config = self.config.clone();
+                config.autostart = enabled;
+                if let Err(error) = self.persist(config) {
+                    crate::autostart::set(&directory, &executable, previous).context(format!(
+                        "Настройки не сохранены: {error:#}; не удалось восстановить автозапуск"
+                    ))?;
+                    return Err(error);
                 }
+                self.message = if enabled {
+                    "Приложение будет запускаться при входе в систему"
+                } else {
+                    "Автозапуск отключён"
+                }
+                .into();
             }
             "save" => {
-                self.persist(serde_json::from_value(request["config"].clone())?)?;
+                let mut config: Config = serde_json::from_value(request["config"].clone())?;
+                config.autostart = self.config.autostart;
+                self.persist(config)?;
                 self.scan_at(Instant::now())?;
                 self.message = "Настройки сохранены".into();
             }
@@ -830,7 +1024,9 @@ impl Engine {
                     fs::metadata(path)?.len() <= 2_000_000,
                     "Файл настроек слишком большой"
                 );
-                let config: Config = serde_json::from_slice(&fs::read(path)?)?;
+                let mut config: Config = serde_json::from_slice(&fs::read(path)?)?;
+                config.mode = manual_mode();
+                config.autostart = self.config.autostart;
                 self.persist(config)?;
                 self.scan_at(Instant::now())?;
                 self.message = "Настройки импортированы; файлы не перемещались".into();
@@ -853,11 +1049,22 @@ impl Engine {
     }
     pub fn command(&mut self, command: &str) -> String {
         self.message.clear();
-        let result = serde_json::from_str(command)
+        let request = serde_json::from_str::<Value>(command);
+        let request_id = request
+            .as_ref()
+            .ok()
+            .map(|r| r["request_id"].clone())
+            .unwrap_or(Value::Null);
+        let operation = request
+            .as_ref()
+            .ok()
+            .map(|r| r["op"].clone())
+            .unwrap_or(Value::Null);
+        let result = request
             .map_err(anyhow::Error::from)
             .and_then(|r| self.execute(r));
         let error = result.err().map(|e| format!("{e:#}")).unwrap_or_default();
-        json!({"config":self.config,"first_run":self.first_run,"queue":self.queue,"history":self.history().unwrap_or_default(),"message":self.message,"error":error,"matches":self.rule_test}).to_string()
+        json!({"config":self.config,"first_run":self.first_run,"queue":self.queue,"history":self.history().unwrap_or_default(),"message":self.message,"error":error,"matches":self.rule_test,"request_id":request_id,"operation":operation}).to_string()
     }
 }
 
@@ -1036,5 +1243,187 @@ mod tests {
     fn another_instance_cannot_open_the_same_journal() {
         let (temp, _engine) = fixture();
         assert!(Engine::open(&temp.path().join("config"), &temp.path().join("state")).is_err());
+    }
+    #[test]
+    fn automatic_moves_only_finished_known_files() {
+        let (_temp, mut engine) = fixture();
+        engine.config.mode = "automatic".into();
+        let root = engine.config.root.clone();
+        fs::write(root.join("image.png"), b"image").unwrap();
+        fs::write(root.join("unknown.iso"), b"archive").unwrap();
+        fs::write(root.join("unfinished.png.part"), b"partial").unwrap();
+        let now = Instant::now();
+        engine.tick_at(now).unwrap();
+        assert!(root.join("image.png").exists());
+        engine.tick_at(now + Duration::from_secs(59)).unwrap();
+        assert!(root.join("image.png").exists());
+        engine.tick_at(now + Duration::from_secs(61)).unwrap();
+        assert!(root.join("Картинки/image.png").exists());
+        assert!(root.join("unknown.iso").exists());
+        assert!(root.join("unfinished.png.part").exists());
+        assert_eq!(engine.history().unwrap().len(), 1);
+    }
+    #[test]
+    fn suggested_files_and_exclusions_are_not_automatic() {
+        let (_temp, mut engine) = fixture();
+        engine.config.mode = "automatic".into();
+        engine.config.rules[0].action = "suggest".into();
+        fs::write(engine.config.root.join("image.png"), b"image").unwrap();
+        fs::write(engine.config.root.join(".hidden.txt"), b"hidden").unwrap();
+        let now = Instant::now();
+        engine.tick_at(now).unwrap();
+        engine.tick_at(now + Duration::from_secs(61)).unwrap();
+        assert!(engine.config.root.join("image.png").exists());
+        assert!(engine.config.root.join(".hidden.txt").exists());
+        assert!(engine.history().unwrap().is_empty());
+        assert_eq!(engine.queue.len(), 1);
+        assert_eq!(engine.queue[0]["action"], "suggest");
+    }
+    #[test]
+    fn paused_mode_and_pause_guard_stop_automatic_moves() {
+        let (_temp, mut engine) = fixture();
+        fs::write(engine.config.root.join("image.png"), b"image").unwrap();
+        engine.config.mode = "paused".into();
+        let now = Instant::now();
+        engine.tick_at(now).unwrap();
+        engine.tick_at(now + Duration::from_secs(61)).unwrap();
+        assert!(engine.config.root.join("image.png").exists());
+        engine.config.mode = "automatic".into();
+        engine.pause_guard.store(true, Ordering::Release);
+        engine.tick_at(now + Duration::from_secs(62)).unwrap();
+        assert!(engine.config.root.join("image.png").exists());
+        engine.pause_guard.store(false, Ordering::Release);
+        engine.tick_at(now + Duration::from_secs(63)).unwrap();
+        assert!(engine.config.root.join("Картинки/image.png").exists());
+    }
+    #[test]
+    fn restored_and_deferred_files_stay_manual_in_auto_mode() {
+        let (_temp, mut engine) = fixture();
+        let source = engine.config.root.join("image.png");
+        fs::write(&source, b"image").unwrap();
+        let id = ready(&mut engine);
+        engine.move_one(&id, "Картинки").unwrap();
+        engine.undo(1).unwrap();
+        engine.config.mode = "automatic".into();
+        let now = Instant::now();
+        engine.tick_at(now).unwrap();
+        engine.tick_at(now + Duration::from_secs(61)).unwrap();
+        assert!(source.exists());
+        let other = engine.config.root.join("other.png");
+        fs::write(&other, b"other").unwrap();
+        engine
+            .db
+            .execute(
+                "INSERT INTO deferred(path) VALUES(?1)",
+                params![bytes(&other)],
+            )
+            .unwrap();
+        engine.tick_at(now + Duration::from_secs(62)).unwrap();
+        engine.tick_at(now + Duration::from_secs(123)).unwrap();
+        assert!(other.exists());
+        assert!(source.exists());
+    }
+    #[test]
+    fn automatic_failure_is_recorded_and_is_not_retried_silently() {
+        let (_temp, mut engine) = fixture();
+        let source = engine.config.root.join("image.png");
+        fs::write(&source, b"old").unwrap();
+        let _id = ready(&mut engine);
+        fs::write(&source, b"changed").unwrap();
+        engine.config.mode = "automatic".into();
+        assert_eq!(engine.automatic_moves().unwrap(), 0);
+        assert_eq!(engine.history().unwrap()[0]["state"], "error");
+        assert_eq!(fs::read(&source).unwrap(), b"changed");
+        let now = Instant::now();
+        engine.tick_at(now).unwrap();
+        engine.tick_at(now + Duration::from_secs(61)).unwrap();
+        assert!(source.exists());
+        assert_eq!(engine.history().unwrap().len(), 1);
+        assert_eq!(engine.queue[0]["manual_only"], true);
+    }
+    #[test]
+    fn preview_tokens_survive_background_scans_but_not_file_changes() {
+        let (_temp, mut engine) = fixture();
+        let source = engine.config.root.join("image.png");
+        fs::write(&source, b"old").unwrap();
+        let now = Instant::now();
+        engine.scan_at(now).unwrap();
+        let id = engine.queue[0]["id"].clone();
+        engine.scan_at(now + Duration::from_secs(15)).unwrap();
+        assert_eq!(engine.queue[0]["id"], id);
+        fs::write(source, b"different").unwrap();
+        engine.scan_at(now + Duration::from_secs(16)).unwrap();
+        assert_ne!(engine.queue[0]["id"], id);
+        assert_eq!(engine.queue[0]["ready"], false);
+    }
+    #[test]
+    fn import_and_folder_changes_require_fresh_auto_confirmation() {
+        let (temp, mut engine) = fixture();
+        let mut imported = engine.config.clone();
+        imported.mode = "automatic".into();
+        let file = temp.path().join("import.json");
+        fs::write(&file, serde_json::to_vec(&imported).unwrap()).unwrap();
+        let response = engine.command(&json!({"op":"import","path":file}).to_string());
+        assert_eq!(
+            serde_json::from_str::<Value>(&response).unwrap()["error"],
+            ""
+        );
+        assert_eq!(engine.config.mode, "manual");
+        let other = temp.path().join("Other downloads");
+        fs::create_dir(&other).unwrap();
+        let mut config = engine.config.clone();
+        config.root = other;
+        config.mode = "automatic".into();
+        engine.persist(config).unwrap();
+        assert_eq!(engine.config.mode, "manual");
+    }
+    #[test]
+    fn first_run_cannot_enable_automatic_mode() {
+        let temp = TempDir::new().unwrap();
+        let mut engine =
+            Engine::open(&temp.path().join("config"), &temp.path().join("state")).unwrap();
+        let response: Value = serde_json::from_str(
+            &engine.command("{\"op\":\"set_mode\",\"mode\":\"automatic\",\"request_id\":42}"),
+        )
+        .unwrap();
+        assert!(!response["error"].as_str().unwrap().is_empty());
+        assert_eq!(response["request_id"], 42);
+        assert_eq!(response["operation"], "set_mode");
+        assert_eq!(engine.config.mode, "manual");
+    }
+    #[test]
+    fn old_json_defaults_to_manual_and_system_theme() {
+        let (_temp, engine) = fixture();
+        let mut json = serde_json::to_value(&engine.config).unwrap();
+        for key in ["mode", "theme", "autostart", "setup_complete"] {
+            json.as_object_mut().unwrap().remove(key);
+        }
+        let config: Config = serde_json::from_value(json).unwrap();
+        assert_eq!(config.mode, "manual");
+        assert_eq!(config.theme, "system");
+        assert!(!config.autostart);
+        assert!(config.setup_complete);
+    }
+    #[test]
+    fn theme_before_setup_does_not_start_watching_or_enable_automation() {
+        let temp = TempDir::new().unwrap();
+        let config = temp.path().join("config");
+        let state = temp.path().join("state");
+        let mut engine = Engine::open(&config, &state).unwrap();
+        let response: Value =
+            serde_json::from_str(&engine.command("{\"op\":\"set_theme\",\"theme\":\"dark\"}"))
+                .unwrap();
+        assert_eq!(response["error"], "");
+        assert_eq!(response["first_run"], true);
+        drop(engine);
+        let mut restarted = Engine::open(&config, &state).unwrap();
+        assert_eq!(restarted.config.theme, "dark");
+        assert!(restarted.first_run);
+        assert_eq!(restarted.config.mode, "manual");
+        let reply: Value = serde_json::from_str(
+            &restarted.command("{\"op\":\"set_mode\",\"mode\":\"automatic\"}"),
+        )
+        .unwrap();
+        assert!(!reply["error"].as_str().unwrap().is_empty());
     }
 }
