@@ -67,7 +67,7 @@ if [[ "$smoke_case" == "first-run" ]]; then
 elif [[ "$smoke_case" == "automation" ]]; then
     smoke_options=(--automation-test)
 elif [[ "$smoke_case" == "dark" ]]; then
-    smoke_options=(--test-width 880 --test-theme dark)
+    smoke_options=(--test-width 880 --test-height 640 --test-theme dark)
     smoke_image="screenshot-dark.png"
 fi
 "$@" --smoke-test --screenshot "$PWD/dist/$smoke_image" "${smoke_options[@]}" > "$smoke_root/qt.log" 2>&1 &

@@ -223,7 +223,7 @@ ApplicationWindow {
         contentItem: Copy { text: control.displayText; elide: Text.ElideRight; verticalAlignment: Text.AlignVCenter }
         indicator: Copy { text: "⌄"; color: window.muted; font.pixelSize: 18; x: control.width - 25; y: (control.height - height) / 2 }
         background: Rectangle { radius: 8; color: window.cardColor; border.color: control.activeFocus ? window.accent : window.lineColor; border.width: control.activeFocus ? 2 : 1 }
-        delegate: ItemDelegate {
+        delegate: Component { ItemDelegate {
             id: option
             required property var modelData
             required property int index
@@ -233,7 +233,7 @@ ApplicationWindow {
             highlighted: control.highlightedIndex === index
             contentItem: Copy { text: option.text; elide: Text.ElideRight; verticalAlignment: Text.AlignVCenter }
             background: Rectangle { radius: 6; color: option.highlighted || option.hovered ? window.accentWash : "transparent" }
-        }
+        } }
         popup: Popup {
             y: control.height + 5
             width: control.width
@@ -278,6 +278,7 @@ ApplicationWindow {
     }
     component Sheet: Dialog {
         id: control
+        default property alias body: sheetBody.data
         parent: Overlay.overlay
         anchors.centerIn: parent
         modal: true
@@ -286,6 +287,13 @@ ApplicationWindow {
         closePolicy: Popup.CloseOnEscape
         background: Rectangle { radius: 16; color: window.cardColor; border.color: window.lineColor }
         header: Heading { text: control.title; font.pixelSize: 21; padding: 24; bottomPadding: 8 }
+        contentItem: ScrollView {
+            id: sheetScroll
+            clip: true
+            contentWidth: availableWidth
+            implicitHeight: Math.min(sheetBody.implicitHeight, window.height - control.header.implicitHeight - control.topPadding - control.bottomPadding - 32)
+            Column { id: sheetBody; width: sheetScroll.availableWidth }
+        }
         Overlay.modal: Rectangle { color: window.dark ? "#aa000000" : "#663b3124" }
     }
     component Tag: Rectangle {
@@ -359,6 +367,8 @@ ApplicationWindow {
         let args = Qt.application.arguments
         let widthIndex = args.indexOf("--test-width")
         if (widthIndex >= 0) window.width = Number(args[widthIndex + 1])
+        let heightIndex = args.indexOf("--test-height")
+        if (heightIndex >= 0) window.height = Number(args[heightIndex + 1])
         send({op: "init"})
     }
     Timer { interval: 100; running: true; repeat: true; onTriggered: backend.poll() }
@@ -913,6 +923,7 @@ ApplicationWindow {
                 console.log("UI_LAYOUT_READY width=" + window.width)
                 if (!first) { editRule(0, config.rules[0]); ruleCategory.popup.open() }
             } else if (step === 3) {
+                if (!first && (ruleDialog.y < 0 || ruleDialog.y + ruleDialog.height > window.height)) { console.error("UI_SMOKE_FAILED rule_dialog_bounds"); Qt.quit(); return }
                 ruleCategory.popup.close(); ruleDialog.close()
                 chooseFolder("root", "")
             } else if (step === 4) {
