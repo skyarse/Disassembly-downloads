@@ -289,6 +289,7 @@ ApplicationWindow {
         header: Heading { text: control.title; font.pixelSize: 21; padding: 24; bottomPadding: 8 }
         contentItem: ScrollView {
             id: sheetScroll
+            implicitWidth: 0
             clip: true
             contentWidth: availableWidth
             implicitHeight: Math.min(sheetBody.implicitHeight, window.height - control.header.implicitHeight - control.topPadding - control.bottomPadding - 32)
@@ -419,7 +420,7 @@ ApplicationWindow {
             width: parent.width
             spacing: 18
             Copy { text: "Будут перемещены выбранные файлы: " + moveItems.length; Layout.fillWidth: true }
-            ScrollView { Layout.fillWidth: true; Layout.preferredHeight: Math.min(220, confirmationText.implicitHeight + 20); clip: true; Memo { id: confirmationText; readOnly: true; width: parent.width; text: moveItems.map(row => row.name + "\n→ " + row.folder).join("\n\n") } }
+            ScrollView { implicitWidth: 0; contentWidth: availableWidth; Layout.fillWidth: true; Layout.preferredHeight: Math.min(220, confirmationText.implicitHeight + 20); clip: true; Memo { id: confirmationText; readOnly: true; width: parent.width; text: moveItems.map(row => row.name + "\n→ " + row.folder).join("\n\n") } }
             RowLayout { Layout.alignment: Qt.AlignRight; ActionButton { text: "Отмена"; onClicked: moveConfirm.close() } ActionButton { text: "Переместить"; primary: true; onClicked: { moveConfirm.close(); send({op: "move", items: moveItems}) } } }
         }
     }
@@ -431,7 +432,7 @@ ApplicationWindow {
             spacing: 18
             Copy { text: "Правила с действием «Переместить» начнут работать сами. Файлы без правила и с действием «Предложить» останутся на разбор."; wrapMode: Text.Wrap; Layout.fillWidth: true }
             Tag { text: "Подходящих файлов сейчас: " + automaticCandidates.length; fill: window.accentWash; textColor: window.ink }
-            ScrollView { Layout.fillWidth: true; Layout.preferredHeight: Math.min(180, autoPreview.implicitHeight + 20); visible: automaticCandidates.length > 0; clip: true; Memo { id: autoPreview; readOnly: true; width: parent.width; text: automaticCandidates.map(row => row.name + " → " + row.destination).join("\n") } }
+            ScrollView { implicitWidth: 0; contentWidth: availableWidth; Layout.fillWidth: true; Layout.preferredHeight: Math.min(180, autoPreview.implicitHeight + 20); visible: automaticCandidates.length > 0; clip: true; Memo { id: autoPreview; readOnly: true; width: parent.width; text: automaticCandidates.map(row => row.name + " → " + row.destination).join("\n") } }
             Small { text: "Перемещение начнётся только после минуты без изменений. Отменённые и отложенные файлы автоматически не обрабатываются."; Layout.fillWidth: true }
             RowLayout { Layout.alignment: Qt.AlignRight; ActionButton { text: "Пока вручную"; onClicked: autoConfirm.close() } ActionButton { text: "Включить авто"; primary: true; onClicked: { autoConfirm.close(); setMode("automatic") } } }
         }
@@ -496,7 +497,7 @@ ApplicationWindow {
             Check { id: ruleActive; text: "Правило активно"; enabled: !busy }
             Small { text: "Первое совпадение побеждает. Новое правило добавляется в начало. «Предложить» всегда требует подтверждения."; Layout.fillWidth: true }
             RowLayout { Layout.fillWidth: true; ActionButton { text: ruleDialog.awaitingTest ? "Проверяю…" : "Проверить совпадения"; enabled: !busy; onClicked: { ruleDialog.awaitingTest = true; send({op: "test", condition: conditionFromEditor()}) } } Small { text: ruleDialog.tested ? "Условие проверено" : "Проверьте перед сохранением"; color: ruleDialog.tested ? window.success : window.muted; Layout.fillWidth: true } }
-            ScrollView { Layout.fillWidth: true; Layout.preferredHeight: 92; clip: true; Memo { width: parent.width; readOnly: true; text: ruleDialog.matchesText; placeholderText: "Здесь появятся файлы, подходящие под условие." } }
+            ScrollView { implicitWidth: 0; contentWidth: availableWidth; Layout.fillWidth: true; Layout.preferredHeight: 92; clip: true; Memo { width: parent.width; readOnly: true; text: ruleDialog.matchesText; placeholderText: "Здесь появятся файлы, подходящие под условие." } }
             RowLayout {
                 Layout.alignment: Qt.AlignRight
                 ActionButton { text: "Отмена"; onClicked: ruleDialog.close() }
