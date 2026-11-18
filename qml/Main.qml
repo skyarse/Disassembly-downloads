@@ -17,7 +17,7 @@ ApplicationWindow {
     font.family: "Sans Serif"
     font.pixelSize: 14
     property var appState: ({queue: [], history: [], matches: [], first_run: true})
-    property var config: ({root: "", categories: [], rules: [], exclusions: [], mode: "manual", theme: "system", autostart: false})
+    property var config: ({root: "", root_automatic: true, sources: [], only_new: false, categories: [], rules: [], exclusions: [], mode: "manual", theme: "system", autostart: false})
     property bool busy: false
     property int requestSequence: 0
     property int pendingRequest: -1
@@ -47,9 +47,27 @@ ApplicationWindow {
     readonly property color success: dark ? "#80c79f" : "#3c8060"
     readonly property var pageTitles: ["Очередь на разбор", "Правила сортировки", "Категории", "История перемещений", "Настройки"]
     readonly property var pageHints: ["Только то, для чего нужно ваше решение", "Проверяйте условия и задавайте порядок", "Выбирайте, куда будут попадать файлы", "Каждое перемещение можно проверить и отменить", "Папка загрузок, режим работы и внешний вид"]
-    readonly property var queueRows: (appState.queue || []).filter(row => mode !== "automatic" || row.action !== "move" || row.manual_only)
-    readonly property int waitingCount: (appState.queue || []).filter(row => mode === "automatic" && row.action === "move").length
-    readonly property var automaticCandidates: (appState.queue || []).filter(row => row.action === "move" && !row.manual_only)
+    readonly property var additionalSources: config.sources || []
+    readonly property var sourcePaths: [config.root].concat(additionalSources.map(source => source.path))
+    readonly property bool hasError: !!appState.error || !!(appState.source_errors || []).length
+    readonly property var queueRows: (appState.queue || []).filter(row => mode !== "automatic" || !isAutomaticCandidate(row))
+    readonly property int waitingCount: mode === "automatic" ? automaticCandidates.length : 0
+    readonly property var automaticCandidates: (appState.queue || []).filter(isAutomaticCandidate)
+
+    function isAutomaticCandidate(row) { return row.automatic && row.action === "move" && !row.manual_only }
+    function relativeFolder(root, folder) {
+        let prefix = root.endsWith("/") ? root : root + "/"
+        return folder.startsWith(prefix) ? folder.slice(prefix.length) : folder
+    }
+    function destinationPath(root, folder) {
+        return folder.startsWith("/") ? folder : (root.endsWith("/") ? root : root + "/") + folder
+    }
+    function updateSource(index, key, value) {
+        let edited = copy(config)
+        if (index < 0) edited[key] = value
+        else edited.sources[index][key] = value
+        saveConfig(edited)
+    }
 
     QtObject { id: tabs; property int currentIndex: 0 }
     function send(command) {
@@ -96,14 +114,14 @@ ApplicationWindow {
         else delete value[row.id]
         selected = value
     }
-    function chooseFolder(purpose, token) {
+    function chooseFolder(purpose, token, root) {
         folderPurpose = purpose
         folderToken = token || ""
-        folders.currentFolder = folderUrl(config.root || "/")
+        folders.currentFolder = folderUrl(root || config.root || "/")
         folders.open()
     }
     function confirmMove(rows) {
-        moveItems = rows.filter(row => row.ready).map(row => ({id: row.id, folder: target(row), name: row.name}))
+        moveItems = rows.filter(row => row.ready).map(row => ({id: row.id, folder: target(row), name: row.name, source: row.source}))
         if (!moveItems.length) { notice = "Выберите готовые файлы."; return }
         if (moveItems.some(row => !row.folder)) { notice = "Укажите папку назначения для каждого выбранного файла."; return }
         moveConfirm.open()
@@ -118,6 +136,11 @@ ApplicationWindow {
         ruleCategory.currentIndex = row ? Math.max(0, config.categories.findIndex(c => c.id === row.category_id)) : 0
         ruleAction.currentIndex = row && row.action === "suggest" ? 1 : 0
         ruleActive.checked = row ? row.active : true
+        let paths = [""].concat(sourcePaths.filter(path => path.length))
+        let scope = row && row.source ? row.source : ""
+        if (!paths.includes(scope)) paths.push(scope)
+        ruleDialog.scopePaths = paths
+        ruleScope.currentIndex = paths.indexOf(scope)
         ruleDialog.ruleId = row ? row.id : "rule-" + Date.now()
         ruleDialog.open()
     }
@@ -126,10 +149,11 @@ ApplicationWindow {
     }
     function ruleFromDecision(row) {
         let folder = target(row)
-        let relative = folder.indexOf(config.root + "/") === 0 ? folder.slice(config.root.length + 1) : folder
+        let source = row.source || config.root
+        let relative = relativeFolder(source, folder)
         let category = config.categories.find(c => c.folder === folder || c.folder === relative)
         if (!category) {
-            pendingDecision = {name: row.name, destination: folder}
+            pendingDecision = {name: row.name, destination: relative, source: source}
             categoryDialog.categoryIndex = -1
             categoryDialog.categoryId = "category-" + Date.now()
             categoryName.text = relative.split("/").filter(x => x.length).pop() || ""
@@ -141,6 +165,7 @@ ApplicationWindow {
         ruleName.text = row.name
         pattern.text = row.name.replace(/([*?[\]{}\\])/g, "\\$1")
         ruleCategory.currentIndex = config.categories.findIndex(c => c.id === category.id)
+        if (additionalSources.length) ruleScope.currentIndex = ruleDialog.scopePaths.indexOf(source)
     }
     function stateName(value) {
         return ({moved: "Перемещено", undone: "Отменено", planned: "Начато", undo_planned: "Отмена начата", needs_review: "Нужна проверка", error: "Не завершено"})[value] || value
@@ -340,6 +365,7 @@ ApplicationWindow {
         try { response = JSON.parse(value) } catch (error) { busy = false; notice = "Не удалось прочитать ответ: " + error; return }
         receivedReplies += 1
         let wasFirstRun = !!appState.first_run
+        let hadError = hasError
         let requested = response.request_id === pendingRequest
         if (requested) { busy = false; pendingOperation = "" }
         if (response.config) {
@@ -351,8 +377,9 @@ ApplicationWindow {
             destinations = keepValid(destinations, response.queue)
         }
         if (response.error) notice = response.error
+        else if (response.source_errors && response.source_errors.length) notice = "Не удалось проверить: " + response.source_errors.join("; ")
         else if (response.message) notice = response.message
-        else if (requested) notice = response.first_run ? "Выберите папку, чтобы начать. Сначала покажем файлы, ничего не перемещая." : "Все изменения сохраняются локально."
+        else if (requested || hadError) notice = response.first_run ? "Выберите папку, чтобы начать. Сначала покажем файлы, ничего не перемещая." : "Все изменения сохраняются локально."
         if (ruleDialog.visible && ruleDialog.awaitingTest && requested && response.operation === "test") {
             ruleDialog.awaitingTest = false
             ruleDialog.tested = !response.error
@@ -393,10 +420,15 @@ ApplicationWindow {
     }
     FolderDialog {
         id: folders
-        title: folderPurpose === "root" ? "Выберите папку загрузок" : "Выберите подпапку назначения"
+        title: folderPurpose === "source" ? "Добавьте папку для наблюдения" : folderPurpose === "root" ? "Выберите папку загрузок" : "Выберите подпапку назначения"
         onAccepted: {
             let path = localPath(selectedFolder)
             if (folderPurpose === "root") { rootField.text = path; rootDirty = true }
+            else if (folderPurpose === "source") {
+                let value = copy(config)
+                value.sources.push({path: path, automatic: false, only_new: false})
+                saveConfig(value)
+            }
             else if (folderPurpose === "category") categoryFolder.text = path
             else { let value = copy(destinations); value[folderToken] = path; destinations = value }
         }
@@ -420,7 +452,7 @@ ApplicationWindow {
             width: parent.width
             spacing: 18
             Copy { text: "Будут перемещены выбранные файлы: " + moveItems.length; Layout.fillWidth: true }
-            ScrollView { implicitWidth: 0; contentWidth: availableWidth; Layout.fillWidth: true; Layout.preferredHeight: Math.min(220, confirmationText.implicitHeight + 20); clip: true; Memo { id: confirmationText; readOnly: true; width: parent.width; text: moveItems.map(row => row.name + "\n→ " + row.folder).join("\n\n") } }
+            ScrollView { implicitWidth: 0; contentWidth: availableWidth; Layout.fillWidth: true; Layout.preferredHeight: Math.min(220, confirmationText.implicitHeight + 20); clip: true; Memo { id: confirmationText; readOnly: true; width: parent.width; text: moveItems.map(row => row.name + "\n→ " + destinationPath(row.source, row.folder)).join("\n\n") } }
             RowLayout { Layout.alignment: Qt.AlignRight; ActionButton { text: "Отмена"; onClicked: moveConfirm.close() } ActionButton { text: "Переместить"; primary: true; onClicked: { moveConfirm.close(); send({op: "move", items: moveItems}) } } }
         }
     }
@@ -432,7 +464,7 @@ ApplicationWindow {
             spacing: 18
             Copy { text: "Правила с действием «Переместить» начнут работать сами. Файлы без правила и с действием «Предложить» останутся на разбор."; wrapMode: Text.Wrap; Layout.fillWidth: true }
             Tag { text: "Подходящих файлов сейчас: " + automaticCandidates.length; fill: window.accentWash; textColor: window.ink }
-            ScrollView { implicitWidth: 0; contentWidth: availableWidth; Layout.fillWidth: true; Layout.preferredHeight: Math.min(180, autoPreview.implicitHeight + 20); visible: automaticCandidates.length > 0; clip: true; Memo { id: autoPreview; readOnly: true; width: parent.width; text: automaticCandidates.map(row => row.name + " → " + row.destination).join("\n") } }
+            ScrollView { implicitWidth: 0; contentWidth: availableWidth; Layout.fillWidth: true; Layout.preferredHeight: Math.min(180, autoPreview.implicitHeight + 20); visible: automaticCandidates.length > 0; clip: true; Memo { id: autoPreview; readOnly: true; width: parent.width; text: automaticCandidates.map(row => row.name + " → " + destinationPath(row.source, row.destination)).join("\n") } }
             Small { text: "Перемещение начнётся только после минуты без изменений. Отменённые и отложенные файлы автоматически не обрабатываются."; Layout.fillWidth: true }
             RowLayout { Layout.alignment: Qt.AlignRight; ActionButton { text: "Пока вручную"; onClicked: autoConfirm.close() } ActionButton { text: "Включить авто"; primary: true; onClicked: { autoConfirm.close(); setMode("automatic") } } }
         }
@@ -474,6 +506,7 @@ ApplicationWindow {
         property bool tested: false
         property bool awaitingTest: false
         property string matchesText: ""
+        property var scopePaths: [""]
         title: ruleIndex < 0 ? "Новое правило" : "Изменить правило"
         width: Math.min(window.width - 64, 700)
         ColumnLayout {
@@ -495,8 +528,20 @@ ApplicationWindow {
                 ColumnLayout { Layout.fillWidth: true; Copy { text: "Действие" } Select { id: ruleAction; enabled: !busy; Layout.fillWidth: true; model: ["Переместить", "Предложить"] } }
             }
             Check { id: ruleActive; text: "Правило активно"; enabled: !busy }
+            RowLayout {
+                Layout.fillWidth: true
+                visible: additionalSources.length > 0 || ruleScope.currentIndex > 0
+                Copy { text: "Применять к папке" }
+                Select {
+                    id: ruleScope
+                    Layout.fillWidth: true
+                    enabled: !busy
+                    model: ruleDialog.scopePaths.map(path => path || "Все папки")
+                    onActivated: ruleDialog.tested = false
+                }
+            }
             Small { text: "Первое совпадение побеждает. Новое правило добавляется в начало. «Предложить» всегда требует подтверждения."; Layout.fillWidth: true }
-            RowLayout { Layout.fillWidth: true; ActionButton { text: ruleDialog.awaitingTest ? "Проверяю…" : "Проверить совпадения"; enabled: !busy; onClicked: { ruleDialog.awaitingTest = true; send({op: "test", condition: conditionFromEditor()}) } } Small { text: ruleDialog.tested ? "Условие проверено" : "Проверьте перед сохранением"; color: ruleDialog.tested ? window.success : window.muted; Layout.fillWidth: true } }
+            RowLayout { Layout.fillWidth: true; ActionButton { text: ruleDialog.awaitingTest ? "Проверяю…" : "Проверить совпадения"; enabled: !busy; onClicked: { ruleDialog.awaitingTest = true; send({op: "test", condition: conditionFromEditor(), source: ruleDialog.scopePaths[ruleScope.currentIndex] || null}) } } Small { text: ruleDialog.tested ? "Условие проверено" : "Проверьте перед сохранением"; color: ruleDialog.tested ? window.success : window.muted; Layout.fillWidth: true } }
             ScrollView { implicitWidth: 0; contentWidth: availableWidth; Layout.fillWidth: true; Layout.preferredHeight: 92; clip: true; Memo { width: parent.width; readOnly: true; text: ruleDialog.matchesText; placeholderText: "Здесь появятся файлы, подходящие под условие." } }
             RowLayout {
                 Layout.alignment: Qt.AlignRight
@@ -507,6 +552,7 @@ ApplicationWindow {
                     onClicked: {
                         let value = copy(config)
                         let rule = {id: ruleDialog.ruleId, name: ruleName.text.trim(), condition: conditionFromEditor(), category_id: config.categories[ruleCategory.currentIndex].id, action: ruleAction.currentIndex === 0 ? "move" : "suggest", active: ruleActive.checked}
+                        rule.source = ruleDialog.scopePaths[ruleScope.currentIndex] || null
                         if (ruleDialog.ruleIndex < 0) value.rules.unshift(rule)
                         else value.rules[ruleDialog.ruleIndex] = rule
                         ruleDialog.close(); saveConfig(value)
@@ -667,7 +713,14 @@ ApplicationWindow {
                                         Layout.preferredWidth: 42; Layout.preferredHeight: 44; radius: 9; color: window.accentWash
                                         Copy { anchors.centerIn: parent; text: String(modelData.name).split(".").pop().slice(0, 4).toUpperCase(); color: window.dark ? window.accent : "#a16b19"; font.pixelSize: 10; font.bold: true }
                                     }
-                                    ColumnLayout { Layout.fillWidth: true; Layout.minimumWidth: 0; spacing: 5; Copy { text: modelData.name; font.bold: true; Layout.fillWidth: true; elide: Text.ElideMiddle } Small { text: modelData.reason; Layout.fillWidth: true; wrapMode: Text.Wrap } }
+                                    ColumnLayout {
+                                        Layout.fillWidth: true
+                                        Layout.minimumWidth: 0
+                                        spacing: 5
+                                        Copy { text: modelData.name; font.bold: true; Layout.fillWidth: true; elide: Text.ElideMiddle }
+                                        Small { text: modelData.reason; Layout.fillWidth: true; wrapMode: Text.Wrap }
+                                        Small { text: modelData.source; visible: additionalSources.length > 0; Layout.fillWidth: true; elide: Text.ElideMiddle; maximumLineCount: 1 }
+                                    }
                                     Small { text: sizeLabel(modelData.size) }
                                 }
                                 RowLayout {
@@ -683,8 +736,8 @@ ApplicationWindow {
                                         enabled: !busy
                                         onActivated: { let value = copy(destinations); value[modelData.id] = config.categories[currentIndex].folder; destinations = value }
                                     }
-                                    Small { text: target(modelData) || "Папка назначения не выбрана"; Layout.fillWidth: true; elide: Text.ElideMiddle; maximumLineCount: 1 }
-                                    ActionButton { text: "Другая папка…"; enabled: !busy; onClicked: chooseFolder("target", modelData.id) }
+                                    Small { text: target(modelData) ? destinationPath(modelData.source, target(modelData)) : "Папка назначения не выбрана"; Layout.fillWidth: true; elide: Text.ElideMiddle; maximumLineCount: 1 }
+                                    ActionButton { text: "Другая папка…"; enabled: !busy; onClicked: chooseFolder("target", modelData.id, modelData.source) }
                                 }
                                 RowLayout {
                                     Layout.fillWidth: true
@@ -732,6 +785,7 @@ ApplicationWindow {
                                         spacing: 5
                                         Copy { text: (index + 1) + ". " + modelData.name; font.bold: true; Layout.fillWidth: true; elide: Text.ElideRight }
                                         Small { text: (modelData.condition.pattern || "Любое имя") + " · " + (modelData.condition.extensions.length ? modelData.condition.extensions.map(ext => "." + ext).join(", ") : "любое расширение"); Layout.fillWidth: true; elide: Text.ElideRight; maximumLineCount: 1 }
+                                        Small { text: modelData.source || ""; visible: !!modelData.source; Layout.fillWidth: true; elide: Text.ElideMiddle; maximumLineCount: 1 }
                                     }
                                     Tag { text: modelData.action === "move" ? "Переместить" : "Предложить"; fill: modelData.action === "move" ? window.accentWash : window.sideColor; textColor: window.ink }
                                 }
@@ -830,7 +884,48 @@ ApplicationWindow {
                                     ActionButton { id: chooseRootButton; objectName: "chooseRootButton"; text: "Выбрать…"; enabled: !busy; onClicked: chooseFolder("root", "") }
                                     ActionButton { id: saveRootButton; objectName: "saveRootButton"; text: "Сохранить"; primary: true; enabled: !busy && rootField.text.length > 0; onClicked: { let value = copy(config); value.root = rootField.text; saveConfig(value) } }
                                 }
+                                RowLayout {
+                                    Layout.fillWidth: true
+                                    Check { text: "Авторазбор"; enabled: !busy && !appState.first_run; checked: config.root_automatic; onToggled: updateSource(-1, "root_automatic", checked) }
+                                    Check { text: "Только новые файлы"; enabled: !busy && !appState.first_run; checked: !!config.only_new; onToggled: updateSource(-1, "only_new", checked) }
+                                }
                                 Small { text: "Назначение — подпапки на том же диске. Новые категории и папки можно добавить во вкладке «Категории»."; Layout.fillWidth: true }
+                            }
+                            Card {
+                                Layout.fillWidth: true
+                                visible: !appState.first_run
+                                RowLayout {
+                                    Layout.fillWidth: true
+                                    Heading { text: "Дополнительные папки"; Layout.fillWidth: true }
+                                    ActionButton { text: "+  Добавить папку"; enabled: !busy; onClicked: chooseFolder("source", "") }
+                                }
+                                Small { text: "Для каждой папки можно включить авторазбор. Общая пауза действует на все папки. «Только новые» оставляет файлы, уже лежащие в папке, на ручной разбор."; Layout.fillWidth: true }
+                                Repeater {
+                                    model: additionalSources
+                                    ColumnLayout {
+                                        required property var modelData
+                                        required property int index
+                                        Layout.fillWidth: true
+                                        spacing: 5
+                                        Rectangle { implicitHeight: 1; Layout.fillWidth: true; color: window.lineColor }
+                                        Copy { text: modelData.path; font.bold: true; Layout.fillWidth: true; elide: Text.ElideMiddle }
+                                        RowLayout {
+                                            Layout.fillWidth: true
+                                            Check { text: "Авторазбор"; enabled: !busy; checked: modelData.automatic; onToggled: updateSource(index, "automatic", checked) }
+                                            Check { text: "Только новые"; enabled: !busy; checked: modelData.only_new; onToggled: updateSource(index, "only_new", checked) }
+                                            Item { Layout.fillWidth: true }
+                                            ActionButton {
+                                                text: "Убрать"
+                                                enabled: !busy
+                                                onClicked: {
+                                                    let value = copy(config)
+                                                    value.sources.splice(index, 1)
+                                                    saveConfig(value)
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
                             }
                             Card {
                                 Layout.fillWidth: true
@@ -879,8 +974,8 @@ ApplicationWindow {
                     Layout.fillWidth: true
                     implicitHeight: statusRow.implicitHeight + 22
                     radius: 9
-                    color: appState.error ? (window.dark ? "#3f2520" : "#fff0ea") : window.cardColor
-                    border.color: appState.error ? window.danger : window.lineColor
+                    color: hasError ? (window.dark ? "#3f2520" : "#fff0ea") : window.cardColor
+                    border.color: hasError ? window.danger : window.lineColor
                     RowLayout {
                         id: statusRow
                         anchors.left: parent.left
@@ -888,8 +983,8 @@ ApplicationWindow {
                         anchors.verticalCenter: parent.verticalCenter
                         anchors.margins: 14
                         spacing: 10
-                        Rectangle { width: 6; height: 6; radius: 3; color: appState.error ? window.danger : window.success }
-                        Small { text: notice; color: appState.error ? window.danger : window.muted; Layout.fillWidth: true; maximumLineCount: 3; elide: Text.ElideRight }
+                        Rectangle { width: 6; height: 6; radius: 3; color: hasError ? window.danger : window.success }
+                        Small { text: notice; color: hasError ? window.danger : window.muted; Layout.fillWidth: true; maximumLineCount: 3; elide: Text.ElideRight }
                     }
                 }
             }
@@ -954,18 +1049,33 @@ ApplicationWindow {
     Timer {
         property double started: 0
         property double lastTest: 0
+        property bool baselineRequested: false
         property bool stopping: false
         interval: 400
         repeat: true
         running: Qt.application.arguments.includes("--automation-test")
         onTriggered: {
             if (busy) return
-            if (appState.error) { console.error("UI_SMOKE_FAILED automation " + appState.error); Qt.quit(); return }
+            if (hasError) { console.error("UI_SMOKE_FAILED automation " + notice); Qt.quit(); return }
             if (started === 0) {
                 if (appState.first_run) return
+                if (!baselineRequested) {
+                    baselineRequested = true
+                    updateSource(-1, "only_new", true)
+                    return
+                }
+                if (!config.only_new || additionalSources.length !== 2 || !queueRows.some(row => row.name === "existing.png" && row.manual_only)) {
+                    console.error("UI_SMOKE_FAILED baseline"); Qt.quit(); return
+                }
                 tabs.currentIndex = 1
                 started = Date.now()
+                requestAutomatic()
+                if (automaticCandidates.length !== 1 || automaticCandidates[0].name !== "Scoped.png" || !autoConfirm.visible) {
+                    console.error("UI_SMOKE_FAILED auto_preview_sources"); Qt.quit(); return
+                }
+                autoConfirm.close()
                 setMode("automatic")
+                console.log("BASELINE_READY")
                 return
             }
             if (stopping) {
@@ -975,7 +1085,11 @@ ApplicationWindow {
                 stop()
                 return
             }
-            if ((appState.history || []).some(entry => entry.state === "moved" && basename(entry.source) === "Screenshot.png")) {
+            let moved = (appState.history || []).filter(entry => entry.state === "moved").map(entry => basename(entry.source))
+            if (moved.includes("Screenshot.png") && moved.includes("Scoped.png")) {
+                if (!queueRows.some(row => row.name === "Manual.png") || !queueRows.some(row => row.name === "existing.png")) {
+                    console.error("UI_SMOKE_FAILED manual_queue_sources"); Qt.quit(); return
+                }
                 if (Date.now() - started < 59000 || tabs.currentIndex !== 1) { console.error("UI_SMOKE_FAILED automation_timing"); Qt.quit(); return }
                 stopping = true
                 setMode("paused")

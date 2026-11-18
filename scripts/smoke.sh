@@ -36,6 +36,20 @@ settings = {
     "exclusions": [],
 }
 if os.environ.get("DOWNLOADS_UI_CASE") != "first-run":
+    if os.environ.get("DOWNLOADS_UI_CASE") == "automation":
+        (root / "Screenshot.png").rename(root / "existing.png")
+        camera = root.parent / "Camera"
+        manual = root.parent / "Manual"
+        camera.mkdir()
+        manual.mkdir()
+        (camera / "Scoped.png").write_bytes(b"camera fixture")
+        (manual / "Manual.png").write_bytes(b"manual fixture")
+        settings["sources"] = [{"path": str(camera), "automatic": True}, {"path": str(manual)}]
+        settings["categories"].append({"id": "camera", "name": "Снимки", "folder": "Снимки"})
+        settings["rules"].insert(0, {
+            "id": "camera", "name": "Камера", "source": str(camera), "category_id": "camera",
+            "condition": {"extensions": ["png"], "pattern": ""}, "action": "move", "active": True,
+        })
     (config / "settings.json").write_text(json.dumps(settings))
 PY
 python3 tests/tray_watcher.py "$smoke_root/tray-item" > "$smoke_root/tray.log" 2>&1 &
@@ -74,8 +88,13 @@ fi
 smoke_pid=$!
 smoke_limit=35
 if [[ "$smoke_case" == "automation" ]]; then smoke_limit=100; fi
+fixture_added=false
 for attempt in $(seq 1 "$smoke_limit"); do
     if ! kill -0 "$smoke_pid" 2>/dev/null; then break; fi
+    if [[ "$smoke_case" == "automation" && "$fixture_added" == false ]] && rg -q 'BASELINE_READY' "$smoke_root/qt.log"; then
+        printf '%s' 'new fixture' > "$smoke_root/Downloads/Screenshot.png"
+        fixture_added=true
+    fi
     sleep 1
 done
 if kill -0 "$smoke_pid" 2>/dev/null; then cat "$smoke_root/qt.log"; exit 1; fi
@@ -92,6 +111,9 @@ if [[ "$smoke_case" == "automation" ]]; then
     test ! -e "$smoke_root/Downloads/Screenshot.png"
     test -f "$smoke_root/Downloads/unknown.iso"
     test -f "$smoke_root/Downloads/unfinished.png.part"
+    test -f "$smoke_root/Downloads/existing.png"
+    test -f "$smoke_root/Camera/Снимки/Scoped.png"
+    test -f "$smoke_root/Manual/Manual.png"
 else
 rg 'QML_READY' "$smoke_root/qt.log"
 rg 'UI_DIALOGS_READY' "$smoke_root/qt.log"
