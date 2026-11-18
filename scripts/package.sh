@@ -16,9 +16,14 @@ if [[ -n "${DOWNLOADS_TRIAGE_VERSION:-}" ]]; then
     export LDAI_UPDATE_INFORMATION='gh-releases-zsync|skyarse|Disassembly-downloads|latest|Downloads-Triage-x86_64.AppImage.zsync'
 fi
 python3 scripts/licenses.py
-tools/linuxdeploy-x86_64.AppImage --appdir AppDir --executable target/release/downloads-triage --desktop-file packaging/net.skyarse.DownloadsTriage.desktop --icon-file packaging/net.skyarse.DownloadsTriage.svg --plugin qt --output appimage
+project="$PWD"
 (
+    # Some appimagetool builds write the zsync file in the working directory.
     cd dist
+    "$project/tools/linuxdeploy-x86_64.AppImage" --appdir "$project/AppDir" \
+        --executable "$project/target/release/downloads-triage" \
+        --desktop-file "$project/packaging/net.skyarse.DownloadsTriage.desktop" \
+        --icon-file "$project/packaging/net.skyarse.DownloadsTriage.svg" --plugin qt --output appimage
     if [[ -n "${DOWNLOADS_TRIAGE_VERSION:-}" ]]; then
         embedded=$(env -u APPIMAGE_EXTRACT_AND_RUN ./Downloads-Triage-x86_64.AppImage --appimage-updateinformation)
         test "$embedded" = "$LDAI_UPDATE_INFORMATION"
