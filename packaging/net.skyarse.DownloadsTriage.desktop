@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Downloads Triage
+Name[ru]=Загрузки на разбор
+Comment=Review and sort downloaded files
+Comment[ru]=Разбор и сортировка загруженных файлов
+Exec=downloads-triage
+Icon=net.skyarse.DownloadsTriage
+Terminal=false
+Categories=Utility;FileTools;

@@ -1,0 +1,115 @@
+name: Build and test AppImage
+on:
+  push:
+    branches: [dev, main]
+  pull_request:
+    branches: [main, dev]
+permissions:
+  contents: read
+concurrency:
+  group: build-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+jobs:
+  linux:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    outputs:
+      release_version: ${{ steps.release.outputs.version }}
+    env:
+      QMAKE: /usr/bin/qmake6
+      QT_VERSION_MAJOR: 6
+      CARGO_TERM_COLOR: never
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Resolve stable version
+        id: release
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: |
+          version=$(python3 scripts/release-version.py)
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "DOWNLOADS_TRIAGE_VERSION=$version" >> "$GITHUB_ENV"
+      - uses: actions/cache/restore@v4
+        id: rust-cache
+        with:
+          path: |
+            target
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-${{ runner.arch }}-rust-1.90-qt6-${{ hashFiles('Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-${{ runner.arch }}-rust-1.90-qt6-
+      - name: Install Qt and build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential lld pkg-config ripgrep qt6-base-dev qt6-declarative-dev qt6-svg-dev qt6-wayland qml6-module-qtquick qml6-module-qtquick-controls qml6-module-qtquick-layouts qml6-module-qtquick-dialogs qml6-module-qt-labs-folderlistmodel qml6-module-qt-labs-platform qml6-module-qtqml-workerscript qml6-module-qtquick-templates qml6-module-qtquick-window qml6-module-qtqml-models libgl1-mesa-dev libxkbcommon-dev libxcb-cursor0 libfuse2t64 weston dbus-x11 gdb python3-dbus python3-gi
+      - name: Install pinned Rust
+        run: rustup toolchain install 1.90.0 --profile minimal --component rustfmt --component clippy
+      - name: Check formatting and frozen dependencies
+        run: |
+          cargo fmt --all -- --check
+          cargo metadata --locked --format-version=1 > /dev/null
+      - name: Test file operations
+        run: cargo test --locked
+      - name: Build desktop application
+        run: cargo build --release --locked
+      - name: Smoke test QML
+        run: bash scripts/smoke.sh
+      - name: Package AppImage
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash scripts/package.sh
+      - name: Smoke test packaged AppImage on Wayland
+        run: APPIMAGE_EXTRACT_AND_RUN=1 bash scripts/smoke.sh dist/Downloads-Triage-x86_64.AppImage
+      - name: Check first-run layout at 150 percent scale
+        run: DOWNLOADS_UI_CASE=first-run QT_SCALE_FACTOR=1.5 APPIMAGE_EXTRACT_AND_RUN=1 bash scripts/smoke.sh dist/Downloads-Triage-x86_64.AppImage
+      - name: Check dark theme in a narrow window
+        run: DOWNLOADS_UI_CASE=dark APPIMAGE_EXTRACT_AND_RUN=1 bash scripts/smoke.sh dist/Downloads-Triage-x86_64.AppImage
+      - name: Verify unattended sorting while editing rules
+        run: DOWNLOADS_UI_CASE=automation APPIMAGE_EXTRACT_AND_RUN=1 bash scripts/smoke.sh dist/Downloads-Triage-x86_64.AppImage
+      - name: Capture UI preview
+        run: |
+          python3 - <<'PY'
+          import base64, pathlib
+          data = base64.b64encode(pathlib.Path("dist/screenshot.png").read_bytes()).decode()
+          for index in range(0, len(data), 32000):
+              print("UI_PREVIEW_BASE64=" + data[index:index + 32000])
+          PY
+      - name: Verify artifact checksum
+        working-directory: dist
+        run: sha256sum --check SHA256SUMS
+      - name: Upload verified AppImage
+        uses: actions/upload-artifact@v4
+        with:
+          name: downloads-triage-x86_64-${{ github.sha }}
+          path: dist/
+          if-no-files-found: error
+          retention-days: 30
+      - uses: actions/cache/save@v4
+        if: always() && steps.rust-cache.outputs.cache-hit != 'true'
+        with:
+          path: |
+            target
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ steps.rust-cache.outputs.cache-primary-key }}
+  release:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: linux
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      - uses: actions/download-artifact@v4
+        with:
+          name: downloads-triage-x86_64-${{ github.sha }}
+          path: dist/
+      - name: Publish stable GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_VERSION: ${{ needs.linux.outputs.release_version }}
+        run: bash scripts/publish-release.sh
