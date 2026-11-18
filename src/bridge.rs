@@ -16,7 +16,7 @@ pub mod ffi {
         type QString = cxx_qt_lib::QString;
         include!("application.h");
         type QGuiApplication = cxx_qt_lib::QGuiApplication;
-        fn create_application(arguments: Vec<String>) -> UniquePtr<QGuiApplication>;
+        fn create_application(arguments: Vec<String>, version: &str) -> UniquePtr<QGuiApplication>;
     }
     extern "RustQt" {
         #[qobject]

@@ -6,7 +6,7 @@
 #include <memory>
 #include <vector>
 
-inline std::unique_ptr<QGuiApplication> create_application(rust::Vec<rust::String> arguments) {
+inline std::unique_ptr<QGuiApplication> create_application(rust::Vec<rust::String> arguments, rust::Str version) {
     static std::vector<QByteArray> storage;
     static std::vector<char*> argv;
     static int argc;
@@ -19,6 +19,7 @@ inline std::unique_ptr<QGuiApplication> create_application(rust::Vec<rust::Strin
     auto app = std::make_unique<QApplication>(argc, argv.data());
     QGuiApplication::setDesktopFileName(QStringLiteral("net.skyarse.DownloadsTriage"));
     QGuiApplication::setApplicationDisplayName(QStringLiteral("Загрузки на разбор"));
+    QCoreApplication::setApplicationVersion(QString::fromUtf8(version.data(), static_cast<qsizetype>(version.size())));
     app->setWindowIcon(QIcon(QStringLiteral(":/icons/app.svg")));
     return app;
 }

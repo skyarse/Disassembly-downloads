@@ -1,24 +1,35 @@
 name: Build and test AppImage
 on:
   push:
-    branches: [dev]
+    branches: [dev, main]
   pull_request:
     branches: [main, dev]
 permissions:
   contents: read
 concurrency:
   group: build-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 jobs:
   linux:
     runs-on: ubuntu-24.04
     timeout-minutes: 25
+    outputs:
+      release_version: ${{ steps.release.outputs.version }}
     env:
       QMAKE: /usr/bin/qmake6
       QT_VERSION_MAJOR: 6
       CARGO_TERM_COLOR: never
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Resolve stable version
+        id: release
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: |
+          version=$(python3 scripts/release-version.py)
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "DOWNLOADS_TRIAGE_VERSION=$version" >> "$GITHUB_ENV"
       - uses: actions/cache/restore@v4
         id: rust-cache
         with:
@@ -67,7 +78,7 @@ jobs:
       - name: Verify artifact checksum
         working-directory: dist
         run: sha256sum --check SHA256SUMS
-      - name: Upload development AppImage
+      - name: Upload verified AppImage
         uses: actions/upload-artifact@v4
         with:
           name: downloads-triage-x86_64-${{ github.sha }}
@@ -82,3 +93,23 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
           key: ${{ steps.rust-cache.outputs.cache-primary-key }}
+  release:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: linux
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      - uses: actions/download-artifact@v4
+        with:
+          name: downloads-triage-x86_64-${{ github.sha }}
+          path: dist/
+      - name: Publish stable GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_VERSION: ${{ needs.linux.outputs.release_version }}
+        run: bash scripts/publish-release.sh

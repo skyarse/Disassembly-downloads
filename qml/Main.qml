@@ -585,7 +585,7 @@ ApplicationWindow {
         ColumnLayout {
             width: parent.width
             spacing: 16
-            Copy { text: "Загрузки на разбор · 0.1.0"; font.bold: true }
+            Copy { text: "Загрузки на разбор · " + Qt.application.version; font.bold: true }
             Small { text: "Файлы обрабатываются на вашем компьютере. Данные и история не отправляются в интернет.\n\nGPL-3.0-only. Программа предоставляется без гарантий."; Layout.fillWidth: true }
             RowLayout { Layout.fillWidth: true; ActionButton { text: "Исходный код ↗"; onClicked: Qt.openUrlExternally("https://github.com/skyarse/Disassembly-downloads") } Item { Layout.fillWidth: true } ActionButton { text: "Закрыть"; onClicked: aboutDialog.close() } }
         }
