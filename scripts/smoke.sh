@@ -43,12 +43,21 @@ if os.environ.get("DOWNLOADS_UI_CASE") != "first-run":
         camera.mkdir()
         manual.mkdir()
         (camera / "Scoped.png").write_bytes(b"camera fixture")
+        (camera / "Show.S02E03.mkv").write_bytes(b"video fixture")
+        (camera / "Show.S02E03.ru.ass").write_bytes(b"subtitle fixture")
         (manual / "Manual.png").write_bytes(b"manual fixture")
+        (root / "Картинки").mkdir()
+        (root / "Картинки" / "existing.png").write_bytes(b"collision fixture")
         settings["sources"] = [{"path": str(camera), "automatic": True}, {"path": str(manual)}]
         settings["categories"].append({"id": "camera", "name": "Снимки", "folder": "Снимки"})
         settings["rules"].insert(0, {
             "id": "camera", "name": "Камера", "source": str(camera), "category_id": "camera",
             "condition": {"extensions": ["png"], "pattern": ""}, "action": "move", "active": True,
+        })
+        settings["rules"].insert(0, {
+            "id": "show", "name": "Сериал", "source": str(camera), "category_id": "camera",
+            "condition": {"extensions": ["mkv"], "pattern": "Show*"},
+            "action": "move", "active": True, "seasons": True,
         })
     (config / "settings.json").write_text(json.dumps(settings))
 PY
@@ -113,6 +122,10 @@ if [[ "$smoke_case" == "automation" ]]; then
     test -f "$smoke_root/Downloads/unfinished.png.part"
     test -f "$smoke_root/Downloads/existing.png"
     test -f "$smoke_root/Camera/Снимки/Scoped.png"
+    test -f "$smoke_root/Camera/Снимки/Сезон 02/Show.S02E03.mkv"
+    test -f "$smoke_root/Camera/Снимки/Сезон 02/Show.S02E03.ru.ass"
+    test ! -e "$smoke_root/Downloads/Картинки/existing (2).png"
+    test "$(cat "$smoke_root/Downloads/Картинки/existing.png")" = 'collision fixture'
     test -f "$smoke_root/Manual/Manual.png"
 else
 rg 'QML_READY' "$smoke_root/qt.log"

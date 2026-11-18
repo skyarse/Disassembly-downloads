@@ -24,6 +24,9 @@ use std::{
     },
     time::{Duration, Instant},
 };
+mod media;
+mod moves;
+mod payload;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -72,6 +75,8 @@ pub struct Category {
     pub id: String,
     pub name: String,
     pub folder: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device: Option<u64>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -84,6 +89,11 @@ pub struct Rule {
     pub active: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<PathBuf>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub seasons: bool,
+}
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -147,16 +157,19 @@ impl Config {
                     id: "pictures".into(),
                     name: "Картинки".into(),
                     folder: "Картинки".into(),
+                    device: None,
                 },
                 Category {
                     id: "documents".into(),
                     name: "Документы".into(),
                     folder: "Документы".into(),
+                    device: None,
                 },
                 Category {
                     id: "music".into(),
                     name: "Музыка".into(),
                     folder: "Музыка".into(),
+                    device: None,
                 },
             ],
             rules: vec![
@@ -177,6 +190,7 @@ impl Config {
                     action: "move".into(),
                     active: true,
                     source: None,
+                    seasons: false,
                 },
                 Rule {
                     id: "documents".into(),
@@ -189,6 +203,7 @@ impl Config {
                     action: "move".into(),
                     active: true,
                     source: None,
+                    seasons: false,
                 },
                 Rule {
                     id: "music".into(),
@@ -201,6 +216,7 @@ impl Config {
                     action: "move".into(),
                     active: true,
                     source: None,
+                    seasons: false,
                 },
             ],
             exclusions: vec![Condition {
@@ -243,7 +259,19 @@ impl Config {
                 !category.name.trim().is_empty(),
                 "У категории должно быть название"
             );
-            relative_destination(&self.root, Path::new(&category.folder))?;
+            let folder = Path::new(&category.folder);
+            if folder.is_absolute() && category.device.is_some() {
+                ensure!(
+                    folder.parent().is_some(),
+                    "Нельзя использовать корень диска как папку назначения"
+                );
+                ensure!(
+                    self.watched_folders().all(|source| folder != source.path),
+                    "Папка назначения совпадает с входящей"
+                );
+            } else {
+                relative_destination(&self.root, folder)?;
+            }
         }
         let mut rules = HashSet::new();
         for rule in &self.rules {
@@ -327,9 +355,15 @@ impl Stamp {
 struct Snapshot {
     stamp: Stamp,
     hash: String,
+    #[serde(default, skip_serializing_if = "is_false")]
+    directory: bool,
 }
 impl Snapshot {
     fn read(path: &Path) -> Result<Self> {
+        let metadata = fs::symlink_metadata(path)?;
+        if metadata.is_dir() {
+            return payload::directory_snapshot(path, &metadata);
+        }
         let mut file = OpenOptions::new()
             .read(true)
             .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
@@ -358,6 +392,7 @@ impl Snapshot {
         Ok(Self {
             stamp,
             hash: format!("{:x}", digest.finalize()),
+            directory: false,
         })
     }
     fn verify(&self, path: &Path) -> Result<()> {
@@ -369,17 +404,41 @@ impl Snapshot {
         Ok(())
     }
     fn same_content(&self, other: &Self) -> bool {
-        self.hash == other.hash
+        self.same_payload(other)
             && self.stamp.dev == other.stamp.dev
             && self.stamp.ino == other.stamp.ino
             && self.stamp.size == other.stamp.size
             && self.stamp.mtime == other.stamp.mtime
             && self.stamp.mtime_ns == other.stamp.mtime_ns
     }
+    fn same_payload(&self, other: &Self) -> bool {
+        self.directory == other.directory
+            && self.hash == other.hash
+            && (self.directory || self.stamp.size == other.stamp.size)
+    }
 }
+#[derive(Clone)]
 struct Pending {
     path: PathBuf,
     snapshot: Option<Snapshot>,
+    companions: Vec<PathBuf>,
+}
+#[derive(Clone)]
+struct PlannedEntry {
+    source: PathBuf,
+    destination: PathBuf,
+    snapshot: Snapshot,
+    device: u64,
+}
+struct MoveGroup {
+    token: String,
+    folder: String,
+    entries: Vec<PlannedEntry>,
+}
+struct MovePlan {
+    id: u64,
+    groups: Vec<MoveGroup>,
+    bundle: bool,
 }
 pub struct Engine {
     pub config: Config,
@@ -397,6 +456,9 @@ pub struct Engine {
     message: String,
     rule_test: Vec<String>,
     source_errors: Vec<String>,
+    directories: HashSet<PathBuf>,
+    preview: Option<MovePlan>,
+    duplicates: Vec<String>,
     first_run: bool,
 }
 fn bytes(path: &Path) -> &[u8] {
@@ -509,22 +571,6 @@ fn rename_noreplace(source: &Path, destination: &Path) -> Result<()> {
     source_parent.sync_all()?;
     Ok(())
 }
-fn next_name(directory: &Path, source: &Path) -> PathBuf {
-    let name = source.file_name().unwrap();
-    let mut result = directory.join(name);
-    let mut count = 2;
-    while present(&result) {
-        let mut name = source.file_stem().unwrap_or(name).to_os_string();
-        name.push(format!(" ({count})"));
-        if let Some(ext) = source.extension() {
-            name.push(".");
-            name.push(ext);
-        }
-        result = directory.join(name);
-        count += 1;
-    }
-    result
-}
 impl Engine {
     pub fn open_default() -> Result<Self> {
         let config = dirs::config_dir()
@@ -562,7 +608,12 @@ impl Engine {
             CREATE TABLE IF NOT EXISTS operations(id INTEGER PRIMARY KEY, created TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, source BLOB NOT NULL, destination BLOB NOT NULL, snapshot TEXT NOT NULL, state TEXT NOT NULL, message TEXT NOT NULL DEFAULT '');
             CREATE TABLE IF NOT EXISTS manual_only(path BLOB PRIMARY KEY);
             CREATE TABLE IF NOT EXISTS deferred(path BLOB PRIMARY KEY);
-            CREATE TABLE IF NOT EXISTS existing_files(root BLOB NOT NULL, path BLOB NOT NULL, identity TEXT NOT NULL, PRIMARY KEY(root,path));")?;
+            CREATE TABLE IF NOT EXISTS existing_files(root BLOB NOT NULL, path BLOB NOT NULL, identity TEXT NOT NULL, PRIMARY KEY(root,path));
+            CREATE TABLE IF NOT EXISTS batches(id INTEGER PRIMARY KEY);
+            CREATE TABLE IF NOT EXISTS batch_members(operation INTEGER PRIMARY KEY, batch INTEGER NOT NULL, group_head INTEGER NOT NULL, original_device TEXT NOT NULL);
+            CREATE INDEX IF NOT EXISTS member_groups ON batch_members(group_head);
+            CREATE INDEX IF NOT EXISTS member_batches ON batch_members(batch);
+            CREATE TABLE IF NOT EXISTS copies(operation INTEGER PRIMARY KEY, direction TEXT NOT NULL, temporary BLOB NOT NULL, holding BLOB NOT NULL, fingerprint TEXT);")?;
         let mut engine = Self {
             config,
             config_path,
@@ -579,6 +630,9 @@ impl Engine {
             message: String::new(),
             rule_test: Vec::new(),
             source_errors: Vec::new(),
+            directories: HashSet::new(),
+            preview: None,
+            duplicates: Vec::new(),
             first_run,
         };
         engine.recover()?;
@@ -608,6 +662,25 @@ impl Engine {
         }
         for category in &mut config.categories {
             let folder = Path::new(&category.folder);
+            if folder.is_absolute()
+                && !folder.starts_with(&self.config.root)
+                && !folder.starts_with(&config.root)
+            {
+                let previous = self
+                    .config
+                    .categories
+                    .iter()
+                    .find(|old| old.id == category.id && old.folder == category.folder);
+                category.device = match previous
+                    .and_then(|old| old.device)
+                    .filter(|_| category.device.is_some())
+                {
+                    Some(device) => Some(device),
+                    None => Some(self.external_device(folder, None)?),
+                };
+                continue;
+            }
+            category.device = None;
             let base = if !folder.starts_with(&config.root) && folder.starts_with(&self.config.root)
             {
                 &self.config.root
@@ -628,7 +701,14 @@ impl Engine {
                 config.only_new = false;
             }
         }
-        let mut needs_preview = false;
+        let mut needs_preview = config.categories.iter().any(|category| {
+            category.device.is_some()
+                && !self.config.categories.iter().any(|previous| {
+                    previous.id == category.id
+                        && previous.folder == category.folder
+                        && previous.device == category.device
+                })
+        });
         for source in config.watched_folders() {
             let old = previous.iter().find(|old| old.path == source.path);
             if source.only_new && (self.first_run || !old.is_some_and(|old| old.only_new)) {
@@ -653,7 +733,74 @@ impl Engine {
         self.config = config;
         self.first_run = false;
         self.pending.clear();
+        self.preview = None;
         Ok(())
+    }
+    fn external_device(&self, path: &Path, expected: Option<u64>) -> Result<u64> {
+        ensure!(
+            path.is_absolute() && path.parent().is_some(),
+            "Выберите папку назначения"
+        );
+        ensure!(
+            path.canonicalize()
+                .with_context(|| format!("Папка назначения недоступна: {}", path.display()))?
+                == path,
+            "Путь назначения содержит ссылку или изменился"
+        );
+        self.validate_watch_root(path)?;
+        let metadata = fs::metadata(path)?;
+        ensure!(metadata.is_dir(), "Назначение не является папкой");
+        ensure!(
+            expected.is_none_or(|device| device == metadata.dev()),
+            "Диск назначения отключён или изменился"
+        );
+        Ok(metadata.dev())
+    }
+    fn resolve_destination(
+        &self,
+        root: &Path,
+        input: &Path,
+        create: bool,
+    ) -> Result<(PathBuf, u64)> {
+        ensure!(
+            self.config
+                .watched_folders()
+                .all(|source| if input.is_absolute() {
+                    input != source.path
+                } else {
+                    root.join(input) != source.path
+                }),
+            "Нельзя перемещать файлы прямо во входящую папку"
+        );
+        if !input.is_absolute() || input.starts_with(root) {
+            return Ok((
+                safe_destination(root, input, create)?,
+                fs::metadata(root)?.dev(),
+            ));
+        }
+        let anchor = self
+            .config
+            .categories
+            .iter()
+            .filter_map(|category| {
+                let base = Path::new(&category.folder);
+                category
+                    .device
+                    .filter(|_| input.starts_with(base))
+                    .map(|device| (base, device))
+            })
+            .max_by_key(|(path, _)| path.components().count());
+        if let Some((base, expected)) = anchor {
+            let device = self.external_device(base, Some(expected))?;
+            let output = if base == input {
+                base.to_path_buf()
+            } else {
+                safe_destination(base, input, create)?
+            };
+            Ok((output, device))
+        } else {
+            Ok((input.to_path_buf(), self.external_device(input, None)?))
+        }
     }
     fn normalize_source(&self, path: &Path, previous: &[Source]) -> Result<PathBuf> {
         ensure!(path.is_absolute(), "Выберите существующую папку загрузок");
@@ -754,13 +901,16 @@ impl Engine {
         seen: &mut HashSet<PathBuf>,
     ) -> Result<()> {
         let paths = self.source_entries(&source.path)?;
+        let subtitle_groups = self.subtitle_catalog(&paths);
+        let start = self.queue.len();
         for path in paths {
             let meta = match fs::symlink_metadata(&path) {
                 Ok(metadata) => metadata,
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
                 Err(error) => return Err(error.into()),
             };
-            if !meta.is_file() || meta.file_type().is_symlink() || temporary(&path) {
+            let directory = meta.is_dir() && self.directories.contains(&path);
+            if (!meta.is_file() && !directory) || temporary(&path) {
                 continue;
             }
             seen.insert(path.clone());
@@ -799,12 +949,30 @@ impl Engine {
             } else {
                 self.config.decision(&path)
             };
-            let destination = decision
-                .map(|(_, c)| relative_destination(&self.config.root, Path::new(&c.folder)))
+            let mut destination = decision
+                .map(|(_, c)| {
+                    if c.device.is_some() {
+                        Ok(Path::new(&c.folder))
+                    } else {
+                        relative_destination(&self.config.root, Path::new(&c.folder))
+                    }
+                })
                 .transpose()?
                 .map(|folder| folder.to_string_lossy().into_owned())
                 .unwrap_or_default();
-            let action = decision.map(|(r, _)| r.action.clone()).unwrap_or_default();
+            let mut action = decision.map(|(r, _)| r.action.clone()).unwrap_or_default();
+            let mut season_missing = false;
+            if decision.is_some_and(|(rule, _)| rule.seasons) && media::video(&path) {
+                if let Some(season) = media::season(&path) {
+                    destination = Path::new(&destination)
+                        .join(format!("Сезон {season}"))
+                        .to_string_lossy()
+                        .into_owned();
+                } else {
+                    season_missing = true;
+                    action = "suggest".into();
+                }
+            }
             let mut reason = if existing {
                 "Файл был в папке до включения режима «Только новые»".into()
             } else if restored {
@@ -822,6 +990,13 @@ impl Engine {
             } else {
                 "Нет подходящего правила".into()
             };
+            if directory {
+                reason = "Папка комплекта · требуется подтверждение".into();
+                action = "suggest".into();
+            }
+            if season_missing {
+                reason = "Сезон не найден в имени · требуется подтверждение".into();
+            }
             let snapshot = if stable {
                 match self.snapshot(&path, &Stamp::of(&meta)) {
                     Ok(value) => Some(value),
@@ -847,10 +1022,109 @@ impl Engine {
                     token
                 }
             };
-            self.queue.push(json!({"id":token, "name":path.file_name().unwrap().to_string_lossy(), "path":path.to_string_lossy(), "source":source.path.to_string_lossy(), "size":meta.len(), "destination":destination, "reason":reason, "ready":snapshot.is_some(), "action":action, "manual_only":restored || existing, "automatic":source.automatic}));
-            self.pending.insert(token, Pending { path, snapshot });
+            self.queue.push(json!({"id":token, "name":path.file_name().unwrap().to_string_lossy(), "path":path.to_string_lossy(), "source":source.path.to_string_lossy(), "size":meta.len(), "destination":destination, "reason":reason, "ready":snapshot.is_some(), "action":action, "directory": directory, "manual_only":restored || existing || directory, "automatic":source.automatic}));
+            self.pending.insert(
+                token,
+                Pending {
+                    path,
+                    snapshot,
+                    companions: Vec::new(),
+                },
+            );
         }
+        self.attach_subtitles(start, subtitle_groups);
         Ok(())
+    }
+    fn subtitle_catalog(&self, paths: &[PathBuf]) -> media::Subtitles {
+        let candidates = paths
+            .iter()
+            .filter(|path| {
+                fs::symlink_metadata(path).is_ok_and(|metadata| metadata.is_file())
+                    && !self
+                        .config
+                        .exclusions
+                        .iter()
+                        .any(|condition| condition.matches(path))
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        media::subtitles(&candidates)
+    }
+    fn attach_subtitles(&mut self, start: usize, groups: media::Subtitles) {
+        let indices: HashMap<PathBuf, usize> = self.queue[start..]
+            .iter()
+            .enumerate()
+            .filter_map(|(index, row)| {
+                let path = self.pending.get(row["id"].as_str()?)?.path.clone();
+                Some((path, start + index))
+            })
+            .collect();
+        for path in &groups.ambiguous {
+            if let Some(&index) = indices.get(path) {
+                self.queue[index]["manual_only"] = json!(true);
+                self.queue[index]["reason"] =
+                    json!("Несколько одноимённых видео · проверьте субтитры вручную");
+            }
+        }
+        let mut combined = HashSet::new();
+        for (video, subtitles) in groups.files {
+            let Some(&index) = indices.get(&video) else {
+                continue;
+            };
+            let mut ready = self.queue[index]["ready"] == true;
+            let mut manual = self.queue[index]["manual_only"] == true;
+            let mut companions = Vec::new();
+            let mut waiting_for_temp = false;
+            for subtitle in subtitles {
+                if !fs::symlink_metadata(&subtitle).is_ok_and(|meta| meta.is_file()) {
+                    continue;
+                }
+                if temporary(&subtitle) {
+                    ready = false;
+                    waiting_for_temp = true;
+                    continue;
+                }
+                if let Some(&sub_index) = indices.get(&subtitle) {
+                    ready &= self.queue[sub_index]["ready"] == true;
+                    manual |= self.queue[sub_index]["manual_only"] == true;
+                    companions.push(subtitle);
+                    if let Some(id) = self.queue[sub_index]["id"].as_str() {
+                        combined.insert(id.to_owned());
+                    }
+                } else {
+                    manual = true;
+                    self.queue[index]["reason"] =
+                        json!("Связанные субтитры отложены · требуется решение");
+                }
+            }
+            let row = &mut self.queue[index];
+            if waiting_for_temp || !companions.is_empty() {
+                let description = if ready {
+                    format!(
+                        "{} · субтитров: {}",
+                        row["reason"].as_str().unwrap_or_default(),
+                        companions.len()
+                    )
+                } else {
+                    "Ожидание готовности видео и субтитров".into()
+                };
+                row["reason"] = json!(description);
+                row["ready"] = json!(ready);
+                row["companions"] = json!(companions
+                    .iter()
+                    .map(|path| path.file_name().unwrap().to_string_lossy())
+                    .collect::<Vec<_>>());
+            }
+            row["manual_only"] = json!(manual);
+            let pending = self.pending.get_mut(row["id"].as_str().unwrap()).unwrap();
+            pending.companions = companions;
+            if !ready {
+                pending.snapshot = None;
+            }
+        }
+        self.queue
+            .retain(|row| !row["id"].as_str().is_some_and(|id| combined.contains(id)));
+        self.pending.retain(|id, _| !combined.contains(id));
     }
     pub fn set_pause_guard(&mut self, guard: Arc<AtomicBool>) {
         self.pause_guard = guard;
@@ -882,6 +1156,10 @@ impl Engine {
                 )
             })
             .collect::<Vec<_>>();
+        if candidates.is_empty() {
+            return Ok(0);
+        }
+        let batch = self.new_batch()?;
         let mut moved = 0;
         for (token, folder) in candidates {
             if self.pause_guard.load(Ordering::Acquire) {
@@ -892,10 +1170,12 @@ impl Engine {
             };
             let source = pending.path.clone();
             let snapshot = pending.snapshot.clone();
+            let held = pending.companions.clone();
             let last_id = self.last_operation_id()?;
-            match self.move_one(&token, &folder) {
+            match self.move_one_in_batch(&token, &folder, batch) {
                 Ok(()) => moved += 1,
                 Err(error) => {
+                    self.pending.remove(&token);
                     if self.last_operation_id()? == last_id {
                         let target = source
                             .parent()
@@ -905,10 +1185,12 @@ impl Engine {
                         self.db.execute("INSERT INTO operations(source,destination,snapshot,state,message) VALUES(?1,?2,?3,'error',?4)",
                             params![bytes(&source), bytes(&target), serde_json::to_string(&snapshot)?, format!("{error:#}")])?;
                     }
-                    self.db.execute(
-                        "INSERT OR IGNORE INTO manual_only(path) VALUES(?1)",
-                        params![bytes(&source)],
-                    )?;
+                    for path in std::iter::once(&source).chain(held.iter()) {
+                        self.db.execute(
+                            "INSERT OR IGNORE INTO manual_only(path) VALUES(?1)",
+                            [bytes(path)],
+                        )?;
+                    }
                 }
             }
         }
@@ -929,64 +1211,10 @@ impl Engine {
         }
         Ok(())
     }
+    #[cfg(test)]
     fn move_one(&mut self, token: &str, folder: &str) -> Result<()> {
-        let pending = self
-            .pending
-            .remove(token)
-            .context("Предпросмотр устарел. Обновите очередь")?;
-        let snapshot = pending
-            .snapshot
-            .context("Файл ещё не готов к перемещению")?;
-        let root = pending.path.parent().context("Нет исходной папки")?;
-        ensure!(
-            self.config
-                .watched_folders()
-                .any(|source| source.path == root)
-                && root.canonicalize()? == root,
-            "Исходная папка изменилась или больше не отслеживается"
-        );
-        let directory = safe_destination(root, Path::new(folder), true)?;
-        snapshot.verify(&pending.path)?;
-        ensure!(
-            fs::metadata(&directory)?.dev() == snapshot.stamp.dev,
-            "Перенос между дисками пока недоступен"
-        );
-        let destination = next_name(&directory, &pending.path);
-        self.db.execute(
-            "INSERT INTO operations(source,destination,snapshot,state) VALUES(?1,?2,?3,'planned')",
-            params![
-                bytes(&pending.path),
-                bytes(&destination),
-                serde_json::to_string(&snapshot)?
-            ],
-        )?;
-        let id = self.db.last_insert_rowid();
-        let result = (|| -> Result<()> {
-            snapshot.verify(&pending.path)?;
-            rename_noreplace(&pending.path, &destination)?;
-            let moved = Snapshot::read(&destination)?;
-            ensure!(
-                snapshot.same_content(&moved),
-                "Файл изменился во время переноса; требуется проверка"
-            );
-            self.db.execute(
-                "UPDATE operations SET state='moved',snapshot=?2 WHERE id=?1",
-                params![id, serde_json::to_string(&moved)?],
-            )?;
-            self.db.execute(
-                "DELETE FROM manual_only WHERE path=?1",
-                params![bytes(&pending.path)],
-            )?;
-            Ok(())
-        })();
-        if let Err(error) = result {
-            self.db.execute(
-                "UPDATE operations SET state='needs_review',message=?2 WHERE id=?1",
-                params![id, format!("{error:#}")],
-            )?;
-            return Err(error);
-        }
-        Ok(())
+        let batch = self.new_batch()?;
+        self.move_one_in_batch(token, folder, batch)
     }
     fn undo(&mut self, id: i64) -> Result<()> {
         let (source, destination, snapshot, state): (Vec<u8>, Vec<u8>, String, String) =
@@ -1008,6 +1236,22 @@ impl Engine {
             source.parent().is_some_and(Path::is_dir),
             "Исходная папка недоступна"
         );
+        let original_device = self.db.query_row(
+            "SELECT original_device FROM batch_members WHERE operation=?1",
+            [id],
+            |row| row.get::<_, String>(0),
+        );
+        let device = match original_device {
+            Ok(device) => device.parse::<u64>()?,
+            Err(rusqlite::Error::QueryReturnedNoRows) => snapshot.stamp.dev,
+            Err(error) => return Err(error.into()),
+        };
+        let original_parent = source.parent().context("Нет исходной папки")?;
+        ensure!(
+            original_parent.canonicalize()? == original_parent
+                && fs::metadata(original_parent)?.dev() == device,
+            "Диск исходной папки отключён или изменился"
+        );
         let transaction = self.db.transaction()?;
         transaction.execute(
             "INSERT OR IGNORE INTO manual_only(path) VALUES(?1)",
@@ -1019,13 +1263,7 @@ impl Engine {
         )?;
         transaction.commit()?;
         let result = (|| -> Result<()> {
-            snapshot.verify(&destination)?;
-            rename_noreplace(&destination, &source)?;
-            let restored = Snapshot::read(&source)?;
-            ensure!(
-                snapshot.same_content(&restored),
-                "Файл изменился во время отмены; требуется проверка"
-            );
+            self.transfer(id, "undo", &destination, &source, &snapshot, device)?;
             self.db
                 .execute("UPDATE operations SET state='undone' WHERE id=?1", [id])?;
             Ok(())
@@ -1052,6 +1290,28 @@ impl Engine {
             } else {
                 (&destination, &source, "undone")
             };
+            let direction = if state == "planned" { "move" } else { "undo" };
+            if let Some((done, current, message)) =
+                self.recover_copy(id, direction, old, new, &snapshot)?
+            {
+                let updated = if done { completed } else { "needs_review" };
+                self.db.execute(
+                    "UPDATE operations SET state=?2,message=?3,snapshot=?4 WHERE id=?1",
+                    params![
+                        id,
+                        updated,
+                        message,
+                        serde_json::to_string(&current.unwrap_or(snapshot))?
+                    ],
+                )?;
+                if !done && direction == "move" {
+                    self.db.execute(
+                        "INSERT OR IGNORE INTO manual_only(path) VALUES(?1)",
+                        [bytes(old)],
+                    )?;
+                }
+                continue;
+            }
             let current = Snapshot::read(new).ok();
             let (new_state, message) =
                 if !present(old) && current.as_ref().is_some_and(|s| snapshot.same_content(s)) {
@@ -1067,6 +1327,12 @@ impl Engine {
                         "Неоднозначное состояние после сбоя. Автоматическое удаление отключено",
                     )
                 };
+            if state == "planned" && new_state != "moved" {
+                self.db.execute(
+                    "INSERT OR IGNORE INTO manual_only(path) VALUES(?1)",
+                    [bytes(old)],
+                )?;
+            }
             let current = if new_state == "moved" && state == "planned" {
                 current.unwrap_or(snapshot)
             } else {
@@ -1080,10 +1346,10 @@ impl Engine {
         Ok(())
     }
     fn history(&self) -> Result<Vec<Value>> {
-        Ok(self.db.prepare("SELECT id,created,source,destination,state,message FROM operations ORDER BY id DESC LIMIT 500")?.query_map([], |r| {
+        Ok(self.db.prepare("SELECT o.id,o.created,o.source,o.destination,o.state,o.message,b.batch,b.group_head,(SELECT count(*) FROM batch_members WHERE group_head=b.group_head) FROM operations o LEFT JOIN batch_members b ON o.id=b.operation ORDER BY o.id DESC LIMIT 500")?.query_map([], |r| {
             let source = from_bytes(r.get(2)?);
             let destination = from_bytes(r.get(3)?);
-            Ok(json!({"id":r.get::<_,i64>(0)?, "created":r.get::<_,String>(1)?, "source":source.to_string_lossy(), "destination":destination.to_string_lossy(), "state":r.get::<_,String>(4)?, "message":r.get::<_,String>(5)?}))
+            Ok(json!({"id":r.get::<_,i64>(0)?, "created":r.get::<_,String>(1)?, "source":source.to_string_lossy(), "destination":destination.to_string_lossy(), "state":r.get::<_,String>(4)?, "message":r.get::<_,String>(5)?,"batch":r.get::<_,Option<i64>>(6)?,"group":r.get::<_,Option<i64>>(7)?,"group_size":r.get::<_,i64>(8)?}))
         })?.collect::<rusqlite::Result<Vec<_>>>()?)
     }
     fn execute(&mut self, request: Value) -> Result<()> {
@@ -1186,35 +1452,160 @@ impl Engine {
                 );
                 self.message = format!("Условию соответствуют файлов: {}. Исключения и правила выше могут иметь приоритет.", self.rule_test.len());
             }
-            "move" => {
+            "plan_move" => {
                 let items = request["items"].as_array().context("Не выбраны файлы")?;
                 ensure!(!items.is_empty(), "Не выбраны файлы");
-                let mut errors = Vec::new();
-                let mut success = 0;
+                self.preview = None;
+                let bundle = request["bundle"] == true;
+                let mut reserved = HashSet::new();
+                let mut groups = Vec::new();
                 for item in items {
-                    match self.move_one(
-                        item["id"].as_str().context("Нет ID")?,
-                        item["folder"].as_str().context("Нет назначения")?,
-                    ) {
-                        Ok(()) => success += 1,
-                        Err(error) => errors.push(format!("{error:#}")),
+                    let token = item["id"].as_str().context("Нет ID")?;
+                    let folder = item["folder"].as_str().context("Нет назначения")?;
+                    match self.plan_group(token, folder, &mut reserved, bundle) {
+                        Ok(group) => groups.push(group),
+                        Err(error) => {
+                            if let Some(pending) = self.pending.get(token) {
+                                if let Some(snapshot) = &pending.snapshot {
+                                    let destination = pending
+                                        .path
+                                        .parent()
+                                        .unwrap()
+                                        .join(folder)
+                                        .join(pending.path.file_name().unwrap());
+                                    self.record_move_error(
+                                        &pending.path,
+                                        &destination,
+                                        snapshot,
+                                        &error,
+                                    )?;
+                                }
+                            }
+                            return Err(error);
+                        }
+                    }
+                }
+                let entries = groups
+                    .iter()
+                    .flat_map(|group| &group.entries)
+                    .collect::<Vec<_>>();
+                ensure!(
+                    entries
+                        .iter()
+                        .filter(|item| item.snapshot.directory)
+                        .all(|folder| entries
+                            .iter()
+                            .all(|item| !item.destination.starts_with(&folder.source))),
+                    "Назначение находится внутри папки, выбранной для переноса"
+                );
+                if bundle {
+                    let first = &groups[0].entries[0];
+                    ensure!(
+                        groups
+                            .iter()
+                            .flat_map(|group| &group.entries)
+                            .all(|item| item.source.parent() == first.source.parent()
+                                && item.destination.parent() == first.destination.parent()),
+                        "Для комплекта выберите файлы из одной папки и общее назначение"
+                    );
+                }
+                self.sequence += 1;
+                self.preview = Some(MovePlan {
+                    id: self.sequence,
+                    groups,
+                    bundle,
+                });
+            }
+            "apply_move" => {
+                let plan = self
+                    .preview
+                    .take()
+                    .context("Предпросмотр устарел. Проверьте пути заново")?;
+                ensure!(request["id"] == plan.id, "Предпросмотр устарел");
+                let batch = self.new_batch()?;
+                let mut failures = Vec::new();
+                let mut moved = 0;
+                let groups = if plan.bundle {
+                    vec![plan.groups.as_slice()]
+                } else {
+                    plan.groups.chunks(1).collect()
+                };
+                for group in groups {
+                    let last_id = self.last_operation_id()?;
+                    match self.execute_groups(group, batch) {
+                        Ok(()) => {
+                            moved += group.iter().map(|item| item.entries.len()).sum::<usize>()
+                        }
+                        Err(error) => {
+                            if self.last_operation_id()? == last_id {
+                                let item = &group[0].entries[0];
+                                self.record_move_error(
+                                    &item.source,
+                                    &item.destination,
+                                    &item.snapshot,
+                                    &error,
+                                )?;
+                            }
+                            failures.push(format!("{error:#}"));
+                        }
                     }
                 }
                 self.scan_at(Instant::now())?;
-                self.message = format!("Перемещено: {success}. {}", errors.join("; "));
+                if !failures.is_empty() {
+                    bail!("Перемещено: {moved}. {}", failures.join("; "));
+                }
+                self.message = format!("Перемещено: {moved}");
             }
-            "undo" => {
-                self.undo(request["id"].as_i64().context("Нет операции")?)?;
+            "undo" | "undo_batch" => {
+                let id = request["id"].as_i64().context("Нет операции")?;
+                let is_batch = request["op"] == "undo_batch";
+                let (restored, errors) = self.undo_selection(id, is_batch)?;
                 self.scan_at(Instant::now())?;
-                self.message = "Файл восстановлен. Для него требуется ручное решение".into();
+                if !errors.is_empty() {
+                    bail!("Восстановлено: {restored}. {}", errors.join("; "));
+                }
+                self.message = format!("Восстановлено: {restored}. Файлы ждут ручного решения");
+            }
+            "add_directory" => {
+                let path = PathBuf::from(request["path"].as_str().context("Нет папки комплекта")?);
+                ensure!(
+                    path.is_absolute() && fs::symlink_metadata(&path)?.is_dir(),
+                    "Выберите обычную папку комплекта"
+                );
+                let root = path.parent().context("Нет исходной папки")?;
+                ensure!(
+                    self.config
+                        .watched_folders()
+                        .any(|source| source.path == root),
+                    "Комплект должен находиться прямо во входящей папке"
+                );
+                ensure!(
+                    !self
+                        .config
+                        .exclusions
+                        .iter()
+                        .any(|rule| rule.matches(&path)),
+                    "Папка исключена правилами"
+                );
+                self.directories.insert(path);
+                self.scan_at(Instant::now())?;
+                self.message = "Папка комплекта добавлена в очередь".into();
+            }
+            "find_duplicates" => {
+                self.duplicates.clear();
+                let token = request["id"].as_str().context("Нет ID файла")?;
+                let root = Path::new(request["path"].as_str().context("Выберите папку")?);
+                self.duplicates = self.find_duplicates(token, root)?;
             }
             "defer" => {
                 let token = request["id"].as_str().context("Нет ID")?;
                 let item = self.pending.get(token).context("Предпросмотр устарел")?;
-                self.db.execute(
-                    "INSERT OR IGNORE INTO deferred(path) VALUES(?1)",
-                    params![bytes(&item.path)],
-                )?;
+                for path in std::iter::once(&item.path).chain(item.companions.iter()) {
+                    self.db.execute(
+                        "INSERT OR IGNORE INTO deferred(path) VALUES(?1)",
+                        [bytes(path)],
+                    )?;
+                }
                 self.scan_at(Instant::now())?;
             }
             "show_deferred" => {
@@ -1256,6 +1647,7 @@ impl Engine {
     }
     pub fn command(&mut self, command: &str) -> String {
         self.message.clear();
+        self.duplicates.clear();
         let request = serde_json::from_str::<Value>(command);
         let request_id = request
             .as_ref()
@@ -1271,7 +1663,7 @@ impl Engine {
             .map_err(anyhow::Error::from)
             .and_then(|r| self.execute(r));
         let error = result.err().map(|e| format!("{e:#}")).unwrap_or_default();
-        json!({"config":self.config,"first_run":self.first_run,"queue":self.queue,"history":self.history().unwrap_or_default(),"source_errors": self.source_errors,"message":self.message,"error":error,"matches":self.rule_test,"request_id":request_id,"operation":operation}).to_string()
+        json!({"config":self.config,"first_run":self.first_run,"queue":self.queue,"history":self.history().unwrap_or_default(),"source_errors": self.source_errors,"plan":self.plan_view(),"duplicates":self.duplicates,"message":self.message,"error":error,"matches":self.rule_test,"request_id":request_id,"operation":operation}).to_string()
     }
 }
 
@@ -1279,6 +1671,323 @@ impl Engine {
 mod tests {
     use super::*;
     use tempfile::TempDir;
+
+    fn command(engine: &mut Engine, request: Value) -> Value {
+        serde_json::from_str(&engine.command(&request.to_string())).unwrap()
+    }
+
+    #[test]
+    fn series_waits_for_subtitles_and_keeps_their_name_after_collision() {
+        let (_temp, mut engine) = fixture();
+        let root = engine.config.root.clone();
+        engine.config.mode = "automatic".into();
+        engine.config.rules[0].condition.extensions = vec!["mkv".into()];
+        engine.config.rules[0].condition.pattern = "Show*".into();
+        engine.config.rules[0].seasons = true;
+        let video = "Show.S02E03.mkv";
+        let subtitle = "Show.S02E03.ru.ass";
+        let partial = root.join(format!("{subtitle}.part"));
+        fs::write(root.join(video), b"video").unwrap();
+        fs::write(&partial, b"subtitle").unwrap();
+        let target = root.join("Картинки/Сезон 02");
+        fs::create_dir_all(&target).unwrap();
+        fs::write(target.join(video), b"previous video").unwrap();
+        let now = Instant::now();
+        engine.tick_at(now).unwrap();
+        engine.tick_at(now + Duration::from_secs(61)).unwrap();
+        assert!(root.join(video).is_file());
+        fs::rename(partial, root.join(subtitle)).unwrap();
+        engine.tick_at(now + Duration::from_secs(62)).unwrap();
+        assert!(root.join(video).is_file());
+        engine.tick_at(now + Duration::from_secs(122)).unwrap();
+        assert_eq!(
+            fs::read(target.join("Show.S02E03 (2).mkv")).unwrap(),
+            b"video"
+        );
+        assert_eq!(
+            fs::read(target.join("Show.S02E03 (2).ru.ass")).unwrap(),
+            b"subtitle"
+        );
+        assert_eq!(fs::read(target.join(video)).unwrap(), b"previous video");
+        let history = engine.history().unwrap();
+        assert_eq!(history[0]["group"], history[1]["group"]);
+        assert_eq!(
+            engine
+                .undo_selection(history[0]["id"].as_i64().unwrap(), false)
+                .unwrap()
+                .0,
+            2
+        );
+        assert!(root.join(video).is_file() && root.join(subtitle).is_file());
+    }
+
+    #[test]
+    fn exact_preview_refuses_a_later_collision_and_batch_undo_restores_files() {
+        let (_temp, mut engine) = fixture();
+        let root = engine.config.root.clone();
+        let folder = root.join("Картинки");
+        fs::create_dir(&folder).unwrap();
+        fs::write(folder.join("a.png"), b"existing").unwrap();
+        fs::write(root.join("a.png"), b"move a").unwrap();
+        fs::write(root.join("b.png"), b"move b").unwrap();
+        let _ = ready(&mut engine);
+        let selections = engine
+            .queue
+            .iter()
+            .map(|row| json!({"id":row["id"],"folder":"Картинки"}))
+            .collect::<Vec<_>>();
+        let response = command(&mut engine, json!({"op":"plan_move", "items":&selections}));
+        let plan = &response["plan"];
+        assert_eq!(
+            plan["entries"][0]["destination"],
+            json!(folder.join("a (2).png"))
+        );
+        fs::write(folder.join("a (2).png"), b"late collision").unwrap();
+        let response = command(&mut engine, json!({"op":"apply_move", "id":plan["id"]}));
+        assert!(!response["error"].as_str().unwrap().is_empty());
+        assert!(root.join("a.png").exists());
+        assert_eq!(
+            fs::read(folder.join("a (2).png")).unwrap(),
+            b"late collision"
+        );
+        assert!(folder.join("b.png").exists());
+        let response = command(
+            &mut engine,
+            json!({"op":"undo_batch","id":response["history"][0]["batch"]}),
+        );
+        assert_eq!(response["error"], "");
+        assert!(root.join("b.png").exists());
+    }
+
+    #[test]
+    fn external_destination_preserves_source_when_missing_and_moves_between_devices() {
+        let (_temp, mut engine) = fixture();
+        let other = TempDir::new_in("/dev/shm").unwrap();
+        let folder = other.path().join("archive");
+        fs::create_dir(&folder).unwrap();
+        let root = engine.config.root.clone();
+        assert_ne!(
+            fs::metadata(&root).unwrap().dev(),
+            fs::metadata(&folder).unwrap().dev()
+        );
+        let mut config = engine.config.clone();
+        config.categories[0].folder = folder.to_string_lossy().into_owned();
+        engine.persist(config).unwrap();
+        let source = root.join("image.png");
+        fs::write(&source, b"verified payload").unwrap();
+        let token = ready(&mut engine);
+        let selected = json!([{"id":token,"folder":folder}]);
+        let plan = command(&mut engine, json!({"op":"plan_move","items":selected}))["plan"].clone();
+        assert_eq!(plan["entries"][0]["copy"], true);
+        let disconnected = other.path().join("disconnected");
+        fs::rename(&folder, &disconnected).unwrap();
+        let stopped = command(&mut engine, json!({"op":"apply_move","id":plan["id"]}));
+        assert!(!stopped["error"].as_str().unwrap().is_empty());
+        assert_eq!(fs::read(&source).unwrap(), b"verified payload");
+        assert!(!folder.exists());
+        fs::rename(disconnected, &folder).unwrap();
+        let token = ready(&mut engine);
+        engine.move_one(&token, folder.to_str().unwrap()).unwrap();
+        assert!(!source.exists());
+        assert_eq!(
+            fs::read(folder.join("image.png")).unwrap(),
+            b"verified payload"
+        );
+        let id = engine.history().unwrap()[0]["id"].as_i64().unwrap();
+        engine.undo(id).unwrap();
+        assert_eq!(fs::read(source).unwrap(), b"verified payload");
+        assert!(!folder.join("image.png").exists());
+
+        let game = root.join("Game");
+        fs::create_dir_all(game.join("resources")).unwrap();
+        fs::write(game.join("resources/assets.bin"), b"game payload").unwrap();
+        assert_eq!(
+            command(&mut engine, json!({"op":"add_directory","path":game}))["error"],
+            ""
+        );
+        let _ = ready(&mut engine);
+        let token = engine
+            .queue
+            .iter()
+            .find(|row| row["directory"] == true)
+            .unwrap()["id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        engine.move_one(&token, folder.to_str().unwrap()).unwrap();
+        let id = engine.history().unwrap()[0]["id"].as_i64().unwrap();
+        assert_eq!(
+            fs::read(folder.join("Game/resources/assets.bin")).unwrap(),
+            b"game payload"
+        );
+        assert!(!game.exists());
+        engine.undo(id).unwrap();
+        assert_eq!(
+            fs::read(game.join("resources/assets.bin")).unwrap(),
+            b"game payload"
+        );
+        assert!(!folder.join("Game").exists());
+    }
+
+    #[test]
+    fn interrupted_copy_keeps_source_and_records_the_partial_path() {
+        let (_temp, mut engine) = fixture();
+        let root = engine.config.root.clone();
+        let source = root.join("a.png");
+        fs::write(&source, b"original").unwrap();
+        let target = root.join("Картинки/a.png");
+        let temporary = root.join(".stage.part");
+        fs::write(&temporary, b"incomplete").unwrap();
+        let snapshot = serde_json::to_string(&Snapshot::read(&source).unwrap()).unwrap();
+        engine.db.execute(
+            "INSERT INTO operations(source,destination,snapshot,state) VALUES(?1,?2,?3,'planned')",
+            params![bytes(&source), bytes(&target), snapshot],
+        ).unwrap();
+        engine
+            .db
+            .execute(
+                "INSERT INTO copies(operation,direction,temporary,holding) VALUES(1,'move',?1,?2)",
+                params![bytes(&temporary), bytes(&root.join(".source.part"))],
+            )
+            .unwrap();
+        engine.recover().unwrap();
+        let history = engine.history().unwrap();
+        assert_eq!(history[0]["state"], "needs_review");
+        assert!(history[0]["message"]
+            .as_str()
+            .unwrap()
+            .contains(".stage.part"));
+        assert_eq!(fs::read(source).unwrap(), b"original");
+        assert!(temporary.exists() && !target.exists());
+    }
+    #[test]
+    fn interrupted_write_preserves_source() {
+        use std::os::unix::process::CommandExt;
+        if let Some(source) = std::env::var_os("TRIAGE_TEST_LIMITED_SOURCE") {
+            let source = PathBuf::from(source);
+            let temporary = PathBuf::from(std::env::var_os("TRIAGE_TEST_LIMITED_TARGET").unwrap());
+            let expected = Snapshot::read(&source).unwrap();
+            let error = payload::stage(&source, &temporary, &expected).unwrap_err();
+            assert_eq!(
+                error
+                    .downcast_ref::<std::io::Error>()
+                    .unwrap()
+                    .raw_os_error(),
+                Some(libc::EFBIG)
+            );
+            expected.verify(&source).unwrap();
+            assert!(!temporary.exists());
+            return;
+        }
+        let source_dir = TempDir::new().unwrap();
+        let target_dir = TempDir::new_in("/dev/shm").unwrap();
+        let source = source_dir.path().join("installer.bin");
+        fs::write(&source, vec![7u8; 256 * 1024]).unwrap();
+        let mut child = std::process::Command::new(std::env::current_exe().unwrap());
+        child
+            .args(["--exact", "core::tests::interrupted_write_preserves_source"])
+            .env("TRIAGE_TEST_LIMITED_SOURCE", &source)
+            .env(
+                "TRIAGE_TEST_LIMITED_TARGET",
+                target_dir.path().join(".partial"),
+            );
+        unsafe {
+            child.pre_exec(|| {
+                libc::signal(libc::SIGXFSZ, libc::SIG_IGN);
+                let limit = libc::rlimit {
+                    rlim_cur: 64 * 1024,
+                    rlim_max: 64 * 1024,
+                };
+                if libc::setrlimit(libc::RLIMIT_FSIZE, &limit) == 0 {
+                    Ok(())
+                } else {
+                    Err(std::io::Error::last_os_error())
+                }
+            });
+        }
+        let output = child.output().unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            output.status.success() && stdout.contains("1 passed"),
+            "{stdout}"
+        );
+        assert_eq!(fs::read(&source).unwrap(), vec![7u8; 256 * 1024]);
+    }
+
+    #[test]
+    fn game_folder_and_duplicate_search_preserve_content() {
+        let (temp, mut engine) = fixture();
+        let root = engine.config.root.clone();
+        let game = root.join("Game.v2");
+        fs::create_dir_all(game.join("data")).unwrap();
+        fs::write(game.join("data/level.bin"), b"assets").unwrap();
+        assert_eq!(
+            command(&mut engine, json!({"op":"add_directory","path":game}))["error"],
+            ""
+        );
+        let id = ready(&mut engine);
+        engine.move_one(&id, "Games").unwrap();
+        assert_eq!(
+            fs::read(root.join("Games/Game.v2/data/level.bin")).unwrap(),
+            b"assets"
+        );
+        assert!(!game.exists());
+        engine.undo(1).unwrap();
+        assert!(game.join("data/level.bin").exists());
+        fs::write(root.join("installer.bin"), b"same data").unwrap();
+        fs::write(temp.path().join("renamed.bin"), b"same data").unwrap();
+        fs::write(temp.path().join("different.bin"), b"some data").unwrap();
+        let folder = temp.path().join("archive");
+        fs::create_dir(&folder).unwrap();
+        fs::rename(temp.path().join("renamed.bin"), folder.join("renamed.bin")).unwrap();
+        fs::rename(
+            temp.path().join("different.bin"),
+            folder.join("different.bin"),
+        )
+        .unwrap();
+        let _ = ready(&mut engine);
+        let id = engine
+            .queue
+            .iter()
+            .find(|row| row["name"] == "installer.bin")
+            .unwrap()["id"]
+            .clone();
+        let response = command(
+            &mut engine,
+            json!({"op":"find_duplicates","id":id,"path":folder}),
+        );
+        assert_eq!(response["error"], "");
+        assert_eq!(response["duplicates"], json!([folder.join("renamed.bin")]));
+        assert!(root.join("installer.bin").exists());
+
+        fs::write(root.join("installer.exe"), b"installer file").unwrap();
+        let _ = ready(&mut engine);
+        let selections = engine
+            .queue
+            .iter()
+            .filter(|row| row["name"].as_str().unwrap().starts_with("installer."))
+            .map(|row| json!({"id": row["id"], "folder": "Installers"}))
+            .collect::<Vec<_>>();
+        let preview = command(
+            &mut engine,
+            json!({"op":"plan_move","items":selections,"bundle":true}),
+        );
+        assert_eq!(preview["error"], "");
+        assert_eq!(preview["plan"]["entries"].as_array().unwrap().len(), 2);
+        let applied = command(
+            &mut engine,
+            json!({"op":"apply_move","id":preview["plan"]["id"]}),
+        );
+        assert_eq!(applied["error"], "");
+        assert_eq!(
+            applied["history"][0]["group"],
+            applied["history"][1]["group"]
+        );
+        assert!(
+            root.join("Installers/installer.exe").exists()
+                && root.join("Installers/installer.bin").exists()
+        );
+    }
     fn fixture() -> (TempDir, Engine) {
         let temp = TempDir::new().unwrap();
         let root = temp.path().join("Downloads");
@@ -1489,6 +2198,7 @@ mod tests {
             id: "screenshots".into(),
             name: "Скриншоты".into(),
             folder: "Скриншоты".into(),
+            device: None,
         });
         let mut scoped = config.rules[0].clone();
         scoped.id = "scoped".into();
