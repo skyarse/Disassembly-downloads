@@ -20,7 +20,7 @@ tools/linuxdeploy-x86_64.AppImage --appdir AppDir --executable target/release/do
 (
     cd dist
     if [[ -n "${DOWNLOADS_TRIAGE_VERSION:-}" ]]; then
-        embedded=$(./Downloads-Triage-x86_64.AppImage --appimage-updateinformation)
+        embedded=$(env -u APPIMAGE_EXTRACT_AND_RUN ./Downloads-Triage-x86_64.AppImage --appimage-updateinformation)
         test "$embedded" = "$LDAI_UPDATE_INFORMATION"
         rg -aqx 'URL: Downloads-Triage-x86_64.AppImage' Downloads-Triage-x86_64.AppImage.zsync
         sha256sum Downloads-Triage-x86_64.AppImage Downloads-Triage-x86_64.AppImage.zsync > SHA256SUMS
