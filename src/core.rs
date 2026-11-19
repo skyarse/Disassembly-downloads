@@ -42,8 +42,8 @@ impl Condition {
         );
         for ext in &self.extensions {
             ensure!(
-                !ext.is_empty() && !ext.contains(['/', '\\', '*', '?', '.']),
-                "Расширения указываются без точки и шаблонов"
+                !ext.split('.').any(str::is_empty) && !ext.contains(['/', '\\', '*', '?']),
+                "Укажите расширение без начальной точки, пустых частей и шаблонов, например zip или tar.gz"
             );
         }
         if !self.pattern.is_empty() {
@@ -59,9 +59,17 @@ impl Condition {
             .compile_matcher())
     }
     pub fn matches(&self, path: &Path) -> bool {
-        let ext = path.extension().and_then(|x| x.to_str()).unwrap_or("");
         let ext_ok = self.extensions.is_empty()
-            || self.extensions.iter().any(|x| x.eq_ignore_ascii_case(ext));
+            || path.file_name().is_some_and(|name| {
+                let name = name.as_bytes();
+                self.extensions.iter().any(|extension| {
+                    let extension = extension.as_bytes();
+                    let start = name.len().saturating_sub(extension.len());
+                    start > 1
+                        && name[start - 1] == b'.'
+                        && name[start..].eq_ignore_ascii_case(extension)
+                })
+            });
         let name_ok = self.pattern.is_empty()
             || self
                 .glob()
@@ -1674,6 +1682,60 @@ mod tests {
 
     fn command(engine: &mut Engine, request: Value) -> Value {
         serde_json::from_str(&engine.command(&request.to_string())).unwrap()
+    }
+
+    #[test]
+    fn compound_extensions_work_in_preview_and_automatic_sorting() {
+        let (_temp, mut engine) = fixture();
+        let root = engine.config.root.clone();
+        let matching = ["backup.TAR.GZ", "package.zip"];
+        let unmatched = ["notes.gz", "notes.notar.gz", "download.tar.gz.part"];
+        for name in matching.into_iter().chain(unmatched) {
+            fs::write(root.join(name), name.as_bytes()).unwrap();
+        }
+
+        let condition = json!({"extensions": ["tar.gz", "zip"], "pattern": ""});
+        let preview = command(&mut engine, json!({"op": "test", "condition": condition}));
+        assert_eq!(preview["error"], "");
+        let mut matches = preview["matches"].as_array().unwrap().clone();
+        matches.sort_by(|a, b| a.as_str().cmp(&b.as_str()));
+        assert_eq!(matches, json!(matching).as_array().unwrap().as_slice());
+
+        let mut config = engine.config.clone();
+        config.rules[0].condition = serde_json::from_value(condition).unwrap();
+        config.categories[0].folder = "Архивы".into();
+        config.mode = "automatic".into();
+        let response = command(&mut engine, json!({"op": "save", "config": config}));
+        assert_eq!(response["error"], "");
+        let now = Instant::now();
+        engine.tick_at(now).unwrap();
+        engine.tick_at(now + Duration::from_secs(61)).unwrap();
+        for name in matching {
+            assert!(root.join("Архивы").join(name).is_file());
+        }
+        for name in unmatched {
+            assert!(root.join(name).is_file());
+        }
+    }
+
+    #[test]
+    fn extension_validation_still_rejects_empty_parts_and_globs() {
+        for extension in [
+            "",
+            ".tar.gz",
+            "tar..gz",
+            "tar.",
+            "*.tar.gz",
+            "tar.?z",
+            "dir/tar.gz",
+            "dir\\tar.gz",
+        ] {
+            let condition = Condition {
+                extensions: vec![extension.into()],
+                pattern: String::new(),
+            };
+            assert!(condition.validate().is_err(), "{extension:?}");
+        }
     }
 
     #[test]

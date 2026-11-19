@@ -581,7 +581,7 @@ ApplicationWindow {
             RowLayout {
                 Layout.fillWidth: true
                 spacing: 16
-                ColumnLayout { Layout.fillWidth: true; Copy { text: "Расширения" } Input { id: extensions; enabled: !busy; Layout.fillWidth: true; placeholderText: "png, jpg"; onTextEdited: ruleDialog.tested = false } }
+                ColumnLayout { Layout.fillWidth: true; Copy { text: "Расширения" } Input { id: extensions; enabled: !busy; Layout.fillWidth: true; placeholderText: "zip, tar.gz"; onTextEdited: ruleDialog.tested = false } }
                 ColumnLayout { Layout.fillWidth: true; Copy { text: "Шаблон имени" } Input { id: pattern; enabled: !busy; Layout.fillWidth: true; placeholderText: "Screenshot*"; onTextEdited: ruleDialog.tested = false } }
             }
             Small { text: "Пустое поле — любое значение. Если заполнены оба, должны совпасть оба условия. * заменяет любой текст, ? — один символ."; Layout.fillWidth: true }
