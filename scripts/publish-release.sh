@@ -20,7 +20,8 @@ fi
 gh release upload "$tag" --clobber \
     dist/Downloads-Triage-x86_64.AppImage dist/Downloads-Triage-x86_64.AppImage.zsync \
     dist/SHA256SUMS dist/SOURCE_COMMIT dist/BUILD_TOOLS.json dist/Cargo.lock dist/screenshot.png
-gh release edit "$tag" --draft=false --latest
-if [[ "$tag" == v0.1.0 ]]; then
-    gh release edit "$tag" --notes-file scripts/initial-release-notes.md
+notes=()
+if [[ -f "scripts/release-notes/$tag.md" ]]; then
+    notes=(--notes-file "scripts/release-notes/$tag.md")
 fi
+gh release edit "$tag" --draft=false --latest "${notes[@]}"
