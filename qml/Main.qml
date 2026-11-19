@@ -27,7 +27,10 @@ ApplicationWindow {
     property var destinations: ({})
     property string folderPurpose: ""
     property string folderToken: ""
-    property var moveItems: []
+    property var movePlan: null
+    property var bundleRows: []
+    property var duplicatePaths: []
+    property var undoRequest: null
     property var pendingDecision: null
     property bool rootDirty: false
     property bool quitting: false
@@ -53,6 +56,10 @@ ApplicationWindow {
     readonly property var queueRows: (appState.queue || []).filter(row => mode !== "automatic" || !isAutomaticCandidate(row))
     readonly property int waitingCount: mode === "automatic" ? automaticCandidates.length : 0
     readonly property var automaticCandidates: (appState.queue || []).filter(isAutomaticCandidate)
+    readonly property var historyRows: (appState.history || []).filter(entry => {
+        let query = historyFilter.text.trim().toLowerCase()
+        return !query || (entry.source + " " + entry.destination).toLowerCase().includes(query)
+    })
 
     function isAutomaticCandidate(row) { return row.automatic && row.action === "move" && !row.manual_only }
     function relativeFolder(root, folder) {
@@ -120,11 +127,11 @@ ApplicationWindow {
         folders.currentFolder = folderUrl(root || config.root || "/")
         folders.open()
     }
-    function confirmMove(rows) {
-        moveItems = rows.filter(row => row.ready).map(row => ({id: row.id, folder: target(row), name: row.name, source: row.source}))
-        if (!moveItems.length) { notice = "Выберите готовые файлы."; return }
-        if (moveItems.some(row => !row.folder)) { notice = "Укажите папку назначения для каждого выбранного файла."; return }
-        moveConfirm.open()
+    function confirmMove(rows, folder) {
+        if (!rows.length || rows.some(row => !row.ready)) { notice = "Выберите готовые файлы."; return }
+        let items = rows.map(row => ({id: row.id, folder: folder || target(row)}))
+        if (items.some(row => !row.folder)) { notice = "Укажите папку назначения для каждого выбранного файла."; return }
+        send({op: "plan_move", items: items, bundle: !!folder})
     }
     function editRule(index, row) {
         ruleDialog.ruleIndex = index
@@ -136,6 +143,7 @@ ApplicationWindow {
         ruleCategory.currentIndex = row ? Math.max(0, config.categories.findIndex(c => c.id === row.category_id)) : 0
         ruleAction.currentIndex = row && row.action === "suggest" ? 1 : 0
         ruleActive.checked = row ? row.active : true
+        ruleSeasons.checked = !!(row && row.seasons)
         let paths = [""].concat(sourcePaths.filter(path => path.length))
         let scope = row && row.source ? row.source : ""
         if (!paths.includes(scope)) paths.push(scope)
@@ -387,6 +395,14 @@ ApplicationWindow {
         }
         if (response.first_run) tabs.currentIndex = 4
         else if (wasFirstRun) tabs.currentIndex = 0
+        if (requested && !response.error && response.operation === "plan_move") {
+            movePlan = response.plan
+            moveConfirm.open()
+        }
+        if (requested && !response.error && response.operation === "find_duplicates") {
+            duplicatePaths = response.duplicates || []
+            duplicateDialog.open()
+        }
         if (pendingDecision && !categoryDialog.visible && !response.error && requested) {
             let decision = pendingDecision; pendingDecision = null; ruleFromDecision(decision)
         }
@@ -420,7 +436,13 @@ ApplicationWindow {
     }
     FolderDialog {
         id: folders
-        title: folderPurpose === "source" ? "Добавьте папку для наблюдения" : folderPurpose === "root" ? "Выберите папку загрузок" : "Выберите подпапку назначения"
+        title: ({
+            root: "Выберите папку загрузок",
+            source: "Добавьте папку для наблюдения",
+            duplicates: "Где искать дубликаты?",
+            directory: "Выберите папку комплекта",
+            bundle: "Выберите общую папку назначения"
+        })[folderPurpose] || "Выберите папку назначения"
         onAccepted: {
             let path = localPath(selectedFolder)
             if (folderPurpose === "root") { rootField.text = path; rootDirty = true }
@@ -429,7 +451,10 @@ ApplicationWindow {
                 value.sources.push({path: path, automatic: false, only_new: false})
                 saveConfig(value)
             }
-            else if (folderPurpose === "category") categoryFolder.text = path
+            else if (folderPurpose === "category") { categoryFolder.text = path; categoryDialog.rebind = true }
+            else if (folderPurpose === "directory") send({op: "add_directory", path: path})
+            else if (folderPurpose === "duplicates") send({op: "find_duplicates", path: path, id: folderToken})
+            else if (folderPurpose === "bundle") confirmMove(bundleRows, path)
             else { let value = copy(destinations); value[folderToken] = path; destinations = value }
         }
     }
@@ -447,13 +472,46 @@ ApplicationWindow {
     }
     Sheet {
         id: moveConfirm
-        title: "Подтвердить перемещение"
+        title: movePlan && movePlan.bundle ? "Перенести комплект?" : "Подтвердить перемещение"
         ColumnLayout {
             width: parent.width
             spacing: 18
-            Copy { text: "Будут перемещены выбранные файлы: " + moveItems.length; Layout.fillWidth: true }
-            ScrollView { implicitWidth: 0; contentWidth: availableWidth; Layout.fillWidth: true; Layout.preferredHeight: Math.min(220, confirmationText.implicitHeight + 20); clip: true; Memo { id: confirmationText; readOnly: true; width: parent.width; text: moveItems.map(row => row.name + "\n→ " + destinationPath(row.source, row.folder)).join("\n\n") } }
-            RowLayout { Layout.alignment: Qt.AlignRight; ActionButton { text: "Отмена"; onClicked: moveConfirm.close() } ActionButton { text: "Переместить"; primary: true; onClicked: { moveConfirm.close(); send({op: "move", items: moveItems}) } } }
+            Copy { text: movePlan ? "Объектов: " + movePlan.entries.length : ""; Layout.fillWidth: true }
+            ScrollView { implicitWidth: 0; contentWidth: availableWidth; Layout.fillWidth: true; Layout.preferredHeight: Math.min(260, confirmationText.implicitHeight + 20); clip: true; Memo { id: confirmationText; readOnly: true; width: parent.width; text: movePlan ? movePlan.entries.map(row => row.source + "\n→ " + row.destination + (row.copy ? " · другой диск" : "")).join("\n\n") : "" } }
+            RowLayout { Layout.alignment: Qt.AlignRight; ActionButton { text: "Отмена"; onClicked: moveConfirm.close() } ActionButton { text: "Переместить"; primary: true; enabled: !busy && !!movePlan; onClicked: { moveConfirm.close(); send({op: "apply_move", id: movePlan.id}) } } }
+        }
+    }
+    Sheet {
+        id: duplicateDialog
+        title: "Дубликаты по содержимому"
+        ColumnLayout {
+            width: parent.width
+            spacing: 12
+            Copy { text: duplicatePaths.length ? "Найдено копий: " + duplicatePaths.length : "Одинаковых файлов в этой папке не найдено."; Layout.fillWidth: true }
+            Repeater {
+                model: duplicatePaths
+                RowLayout {
+                    required property string modelData
+                    Layout.fillWidth: true
+                    Copy { text: modelData; wrapMode: Text.Wrap; Layout.fillWidth: true }
+                    ActionButton { text: "Открыть папку"; onClicked: Qt.openUrlExternally(folderUrl(modelData.slice(0, modelData.lastIndexOf("/")) || "/")) }
+                }
+            }
+            ActionButton { text: "Закрыть"; Layout.alignment: Qt.AlignRight; onClicked: duplicateDialog.close() }
+        }
+    }
+    Sheet {
+        id: undoDialog
+        title: undoRequest && undoRequest.op === "undo_batch" ? "Отменить весь запуск?" : "Отменить перенос комплекта?"
+        ColumnLayout {
+            width: parent.width
+            spacing: 16
+            Small { text: "Файлы вернутся, если они не изменились и исходные пути свободны. Результат появится в истории."; Layout.fillWidth: true }
+            RowLayout {
+                Layout.alignment: Qt.AlignRight
+                ActionButton { text: "Назад"; onClicked: undoDialog.close() }
+                ActionButton { text: "Отменить перенос"; primary: true; enabled: !busy; onClicked: { undoDialog.close(); send(undoRequest) } }
+            }
         }
     }
     Sheet {
@@ -473,8 +531,10 @@ ApplicationWindow {
         id: categoryDialog
         property int categoryIndex: -1
         property string categoryId: ""
+        property bool rebind: false
         title: categoryIndex < 0 ? "Новая категория" : "Изменить категорию"
         onRejected: pendingDecision = null
+        onClosed: rebind = false
         ColumnLayout {
             width: parent.width
             spacing: 12
@@ -482,7 +542,7 @@ ApplicationWindow {
             Input { id: categoryName; Layout.fillWidth: true; placeholderText: "Например, Скриншоты" }
             Copy { text: "Папка назначения" }
             RowLayout { Layout.fillWidth: true; Input { id: categoryFolder; Layout.fillWidth: true; Layout.minimumWidth: 180; placeholderText: "Картинки/Скриншоты" } ActionButton { text: "Выбрать…"; onClicked: chooseFolder("category", "") } }
-            Small { text: "Можно указать новую подпапку внутри загрузок — она создастся при первом переносе."; Layout.fillWidth: true }
+            Small { text: "Подпапка входящей папки создаётся при переносе. Для другого диска выберите существующую папку."; Layout.fillWidth: true }
             RowLayout {
                 Layout.alignment: Qt.AlignRight
                 Layout.topMargin: 10
@@ -492,7 +552,11 @@ ApplicationWindow {
                     onClicked: {
                         let value = copy(config), item = {id: categoryDialog.categoryId, name: categoryName.text.trim(), folder: categoryFolder.text.trim()}
                         if (categoryDialog.categoryIndex < 0) value.categories.push(item)
-                        else value.categories[categoryDialog.categoryIndex] = item
+                        else {
+                            let previous = value.categories[categoryDialog.categoryIndex]
+                            if (!categoryDialog.rebind && previous.folder === item.folder) item.device = previous.device
+                            value.categories[categoryDialog.categoryIndex] = item
+                        }
                         categoryDialog.close(); saveConfig(value)
                     }
                 }
@@ -517,7 +581,7 @@ ApplicationWindow {
             RowLayout {
                 Layout.fillWidth: true
                 spacing: 16
-                ColumnLayout { Layout.fillWidth: true; Copy { text: "Расширения" } Input { id: extensions; enabled: !busy; Layout.fillWidth: true; placeholderText: "png, jpg"; onTextEdited: ruleDialog.tested = false } }
+                ColumnLayout { Layout.fillWidth: true; Copy { text: "Расширения" } Input { id: extensions; enabled: !busy; Layout.fillWidth: true; placeholderText: "zip, tar.gz"; onTextEdited: ruleDialog.tested = false } }
                 ColumnLayout { Layout.fillWidth: true; Copy { text: "Шаблон имени" } Input { id: pattern; enabled: !busy; Layout.fillWidth: true; placeholderText: "Screenshot*"; onTextEdited: ruleDialog.tested = false } }
             }
             Small { text: "Пустое поле — любое значение. Если заполнены оба, должны совпасть оба условия. * заменяет любой текст, ? — один символ."; Layout.fillWidth: true }
@@ -528,6 +592,7 @@ ApplicationWindow {
                 ColumnLayout { Layout.fillWidth: true; Copy { text: "Действие" } Select { id: ruleAction; enabled: !busy; Layout.fillWidth: true; model: ["Переместить", "Предложить"] } }
             }
             Check { id: ruleActive; text: "Правило активно"; enabled: !busy }
+            Check { id: ruleSeasons; text: "Создавать папки по сезонам (S02E03 → Сезон 02)"; enabled: !busy }
             RowLayout {
                 Layout.fillWidth: true
                 visible: additionalSources.length > 0 || ruleScope.currentIndex > 0
@@ -553,6 +618,7 @@ ApplicationWindow {
                         let value = copy(config)
                         let rule = {id: ruleDialog.ruleId, name: ruleName.text.trim(), condition: conditionFromEditor(), category_id: config.categories[ruleCategory.currentIndex].id, action: ruleAction.currentIndex === 0 ? "move" : "suggest", active: ruleActive.checked}
                         rule.source = ruleDialog.scopePaths[ruleScope.currentIndex] || null
+                        rule.seasons = ruleSeasons.checked
                         if (ruleDialog.ruleIndex < 0) value.rules.unshift(rule)
                         else value.rules[ruleDialog.ruleIndex] = rule
                         ruleDialog.close(); saveConfig(value)
@@ -691,6 +757,19 @@ ApplicationWindow {
                             Item { Layout.fillWidth: true }
                             ActionButton { text: "Перенести (" + Object.keys(selected).length + ")"; primary: true; enabled: !busy && Object.keys(selected).length > 0; onClicked: confirmMove(queueRows.filter(row => selected[row.id])) }
                         }
+                        RowLayout {
+                            Layout.fillWidth: true
+                            ActionButton { text: "Добавить папку комплекта…"; enabled: !busy && !appState.first_run; onClicked: chooseFolder("directory", "") }
+                            ActionButton {
+                                text: "Перенести как комплект…"
+                                enabled: !busy && Object.keys(selected).length > 1
+                                onClicked: {
+                                    bundleRows = queueRows.filter(row => selected[row.id])
+                                    if (bundleRows.some(row => row.source !== bundleRows[0].source)) { notice = "Выберите файлы из одной входящей папки."; return }
+                                    chooseFolder("bundle", "", bundleRows[0].source)
+                                }
+                            }
+                        }
                         Tag { visible: waitingCount > 0; text: "Автоочередь: " + waitingCount + " · ожидают готовности или следующей проверки"; fill: window.accentWash; textColor: window.ink }
                         ListView {
                             id: queueList
@@ -719,9 +798,10 @@ ApplicationWindow {
                                         spacing: 5
                                         Copy { text: modelData.name; font.bold: true; Layout.fillWidth: true; elide: Text.ElideMiddle }
                                         Small { text: modelData.reason; Layout.fillWidth: true; wrapMode: Text.Wrap }
+                                        Small { text: (modelData.companions || []).join(", "); visible: !!(modelData.companions || []).length; Layout.fillWidth: true; elide: Text.ElideRight; maximumLineCount: 1 }
                                         Small { text: modelData.source; visible: additionalSources.length > 0; Layout.fillWidth: true; elide: Text.ElideMiddle; maximumLineCount: 1 }
                                     }
-                                    Small { text: sizeLabel(modelData.size) }
+                                    Small { text: modelData.directory ? "Папка" : sizeLabel(modelData.size) }
                                 }
                                 RowLayout {
                                     Layout.fillWidth: true
@@ -742,7 +822,8 @@ ApplicationWindow {
                                 RowLayout {
                                     Layout.fillWidth: true
                                     spacing: 10
-                                    ActionButton { text: "Создать правило"; enabled: !busy && !!target(modelData); onClicked: ruleFromDecision(modelData) }
+                                    ActionButton { text: "Создать правило"; enabled: !busy && !modelData.directory && !!target(modelData); onClicked: ruleFromDecision(modelData) }
+                                    ActionButton { text: "Дубликаты…"; enabled: !busy && modelData.ready && !modelData.directory; onClicked: chooseFolder("duplicates", modelData.id, modelData.source) }
                                     Item { Layout.fillWidth: true }
                                     ActionButton { text: "Отложить"; enabled: !busy; onClicked: send({op: "defer", id: modelData.id}) }
                                     ActionButton { text: "Переместить"; primary: true; enabled: !busy && modelData.ready && !!target(modelData); onClicked: confirmMove([modelData]) }
@@ -832,6 +913,7 @@ ApplicationWindow {
                     }
                     ColumnLayout {
                         spacing: 16
+                        Input { id: historyFilter; Layout.fillWidth: true; placeholderText: "Поиск по имени и пути"; Accessible.name: "Поиск в истории" }
                         Small { text: "Последние 500 операций. Отмена доступна, если файл не изменён, а исходное место свободно."; Layout.fillWidth: true }
                         ListView {
                             id: historyList
@@ -839,10 +921,11 @@ ApplicationWindow {
                             Layout.fillHeight: true
                             spacing: 12
                             clip: true
-                            model: appState.history || []
+                            model: historyRows
                             ScrollBar.vertical: ScrollBar {}
                             delegate: Card {
                                 required property var modelData
+                                required property int index
                                 width: historyList.width - (historyList.contentHeight > historyList.height ? 12 : 0)
                                 padding: 18
                                 RowLayout {
@@ -858,7 +941,21 @@ ApplicationWindow {
                                         Small { text: modelData.created + " UTC"; Layout.fillWidth: true }
                                         Small { text: modelData.message; visible: !!modelData.message; color: modelData.state === "error" || modelData.state === "needs_review" ? window.danger : window.muted; Layout.fillWidth: true }
                                     }
-                                    ActionButton { text: "Отменить"; enabled: !busy && modelData.state === "moved"; onClicked: send({op: "undo", id: modelData.id}) }
+                                    ActionButton {
+                                        text: modelData.group_size > 1 ? "Отменить комплект" : "Отменить"
+                                        enabled: !busy && modelData.state === "moved"
+                                        onClicked: {
+                                            let command = {op: "undo", id: modelData.id}
+                                            if (modelData.group_size > 1) { undoRequest = command; undoDialog.open() }
+                                            else send(command)
+                                        }
+                                    }
+                                }
+                                RowLayout {
+                                    Layout.fillWidth: true
+                                    visible: !!modelData.batch && historyRows.findIndex(entry => entry.batch === modelData.batch && entry.state === "moved") === index
+                                    Small { text: "Запуск " + modelData.batch; Layout.fillWidth: true }
+                                    ActionButton { text: "Отменить запуск…"; enabled: !busy; onClicked: { undoRequest = {op: "undo_batch", id: modelData.batch}; undoDialog.open() } }
                                 }
                             }
                             ColumnLayout { anchors.centerIn: parent; width: Math.min(parent.width - 48, 420); spacing: 12; visible: historyList.count === 0; LineIcon { Layout.alignment: Qt.AlignHCenter; width: 38; height: 38; symbol: "history" } Heading { text: "История начнётся с первого переноса"; horizontalAlignment: Text.AlignHCenter; Layout.fillWidth: true; wrapMode: Text.Wrap } Small { text: "Здесь будут исходный и конечный путь, результат и кнопка отмены."; horizontalAlignment: Text.AlignHCenter; Layout.fillWidth: true } }
@@ -889,7 +986,7 @@ ApplicationWindow {
                                     Check { text: "Авторазбор"; enabled: !busy && !appState.first_run; checked: config.root_automatic; onToggled: updateSource(-1, "root_automatic", checked) }
                                     Check { text: "Только новые файлы"; enabled: !busy && !appState.first_run; checked: !!config.only_new; onToggled: updateSource(-1, "only_new", checked) }
                                 }
-                                Small { text: "Назначение — подпапки на том же диске. Новые категории и папки можно добавить во вкладке «Категории»."; Layout.fillWidth: true }
+                                Small { text: "Папку назначения можно указать во вкладке «Категории», в том числе на другом диске."; Layout.fillWidth: true }
                             }
                             Card {
                                 Layout.fillWidth: true
@@ -1051,6 +1148,7 @@ ApplicationWindow {
         property double lastTest: 0
         property bool baselineRequested: false
         property bool stopping: false
+        property int afterAuto: 0
         interval: 400
         repeat: true
         running: Qt.application.arguments.includes("--automation-test")
@@ -1070,7 +1168,8 @@ ApplicationWindow {
                 tabs.currentIndex = 1
                 started = Date.now()
                 requestAutomatic()
-                if (automaticCandidates.length !== 1 || automaticCandidates[0].name !== "Scoped.png" || !autoConfirm.visible) {
+                let candidates = automaticCandidates.map(row => row.name).sort().join(",")
+                if (candidates !== "Scoped.png,Show.S02E03.mkv" || !autoConfirm.visible) {
                     console.error("UI_SMOKE_FAILED auto_preview_sources"); Qt.quit(); return
                 }
                 autoConfirm.close()
@@ -1080,13 +1179,31 @@ ApplicationWindow {
             }
             if (stopping) {
                 if (mode !== "paused") { console.error("UI_SMOKE_FAILED pause_after_automation"); Qt.quit(); return }
-                console.log("AUTOMATION_READY elapsed=" + Math.round((Date.now() - started) / 1000))
-                Qt.quit()
-                stop()
+                if (afterAuto === 0) {
+                    confirmMove(queueRows.filter(row => row.name === "existing.png"))
+                } else if (afterAuto === 1) {
+                    if (!moveConfirm.visible || !movePlan || !movePlan.entries[0].destination.endsWith("existing (2).png")) {
+                        console.error("UI_SMOKE_FAILED exact_preview"); Qt.quit(); return
+                    }
+                    moveConfirm.close()
+                    send({op: "apply_move", id: movePlan.id})
+                } else if (afterAuto === 2) {
+                    let manualMove = appState.history.find(entry => basename(entry.source) === "existing.png" && entry.state === "moved")
+                    if (!manualMove || !manualMove.batch) { console.error("UI_SMOKE_FAILED manual_move"); Qt.quit(); return }
+                    send({op: "undo_batch", id: manualMove.batch})
+                } else {
+                    if (!appState.history.some(entry => basename(entry.source) === "existing.png" && entry.state === "undone")) {
+                        console.error("UI_SMOKE_FAILED batch_undo"); Qt.quit(); return
+                    }
+                    console.log("AUTOMATION_READY elapsed=" + Math.round((Date.now() - started) / 1000))
+                    Qt.quit()
+                    stop()
+                }
+                afterAuto += 1
                 return
             }
             let moved = (appState.history || []).filter(entry => entry.state === "moved").map(entry => basename(entry.source))
-            if (moved.includes("Screenshot.png") && moved.includes("Scoped.png")) {
+            if (moved.includes("Screenshot.png") && moved.includes("Scoped.png") && moved.includes("Show.S02E03.ru.ass")) {
                 if (!queueRows.some(row => row.name === "Manual.png") || !queueRows.some(row => row.name === "existing.png")) {
                     console.error("UI_SMOKE_FAILED manual_queue_sources"); Qt.quit(); return
                 }
