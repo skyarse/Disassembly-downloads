@@ -59,6 +59,9 @@ if os.environ.get("DOWNLOADS_UI_CASE") != "first-run":
             "condition": {"extensions": ["mkv"], "pattern": "Show*"},
             "action": "move", "active": True, "seasons": True,
         })
+    else:
+        for index, name in enumerate(["Документы", "Музыка", "Торренты", "Архивы", "Видео", "Программы", "Конфиги"]):
+            settings["categories"].append({"id": f"extra-{index}", "name": name, "folder": name})
     (config / "settings.json").write_text(json.dumps(settings))
 PY
 python3 tests/tray_watcher.py "$smoke_root/tray-item" > "$smoke_root/tray.log" 2>&1 &
