@@ -60,7 +60,11 @@ if os.environ.get("DOWNLOADS_UI_CASE") != "first-run":
             "action": "move", "active": True, "seasons": True,
         })
     else:
-        for index, name in enumerate(["Документы", "Музыка", "Торренты", "Архивы", "Видео", "Программы", "Конфиги"]):
+        category_names = ["Документы", "Музыка", "Торренты", "Архивы", "Видео", "Программы"]
+        if os.environ.get("DOWNLOADS_UI_CASE") == "dark":
+            category_names.extend(f"Категория {index}" for index in range(1, 7))
+        category_names.append("Конфиги")
+        for index, name in enumerate(category_names):
             settings["categories"].append({"id": f"extra-{index}", "name": name, "folder": name})
     (config / "settings.json").write_text(json.dumps(settings))
 PY
@@ -93,7 +97,7 @@ if [[ "$smoke_case" == "first-run" ]]; then
 elif [[ "$smoke_case" == "automation" ]]; then
     smoke_options=(--automation-test)
 elif [[ "$smoke_case" == "dark" ]]; then
-    smoke_options=(--test-width 880 --test-height 640 --test-theme dark)
+    smoke_options=(--test-width 880 --test-height 640 --test-theme dark --test-long-categories)
     smoke_image="screenshot-dark.png"
 fi
 "$@" --smoke-test --screenshot "$PWD/dist/$smoke_image" "${smoke_options[@]}" > "$smoke_root/qt.log" 2>&1 &

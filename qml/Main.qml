@@ -270,8 +270,9 @@ ApplicationWindow {
         popup: Popup {
             y: control.height + 5
             width: control.width
+            margins: 12
             padding: 6
-            implicitHeight: Math.min(contentItem.implicitHeight + 12, 280)
+            implicitHeight: Math.min(contentItem.implicitHeight + topPadding + bottomPadding, 392, window.height - 2 * margins)
             background: Rectangle { radius: 10; color: window.cardColor; border.color: window.lineColor }
             contentItem: ListView {
                 id: optionsList
@@ -1107,6 +1108,8 @@ ApplicationWindow {
         onTriggered: {
             if (busy) return
             let first = Qt.application.arguments.includes("--first-run-test")
+            let longCategories = Qt.application.arguments.includes("--test-long-categories")
+            let expectedCategories = longCategories ? 14 : 8
             if (step === 0) {
                 previousReplies = receivedReplies
                 backend.request(JSON.stringify({op: "init"}))
@@ -1124,13 +1127,14 @@ ApplicationWindow {
                 if (!first) {
                     let list = ruleCategory.popup.contentItem
                     let bar = list.ScrollBar.vertical
-                    if (ruleCategory.count !== 8 || !bar.visible || bar.policy !== ScrollBar.AlwaysOn) {
+                    if (ruleCategory.count !== expectedCategories || bar.visible !== longCategories) {
                         console.error("UI_SMOKE_FAILED category_scrollbar"); Qt.quit(); return
                     }
-                    bar.position = 1 - bar.size
+                    if (longCategories) bar.position = 1 - bar.size
                     list.forceLayout()
                     let last = list.itemAtIndex(ruleCategory.count - 1)
-                    if (!last || last.text !== "Конфиги" || last.y + last.height > list.contentY + list.height + 1) {
+                    let lastBottom = last ? last.mapToItem(null, 0, last.height).y : 0
+                    if (!last || last.text !== "Конфиги" || last.y + last.height > list.contentY + list.height + 1 || lastBottom > window.height) {
                         console.error("UI_SMOKE_FAILED last_category"); Qt.quit(); return
                     }
                 }
@@ -1151,7 +1155,7 @@ ApplicationWindow {
                 if (theme >= 0) themeChoice = args[theme + 1]
                 tabs.currentIndex = first ? 4 : 0
             } else if (step === 6) {
-                if (busy || appState.error || (!first && (queueList.count !== 2 || rulesList.count !== 1 || categoriesList.count !== 8))) { console.error("UI_SMOKE_FAILED " + JSON.stringify(appState)); Qt.quit(); return }
+                if (busy || appState.error || (!first && (queueList.count !== 2 || rulesList.count !== 1 || categoriesList.count !== expectedCategories))) { console.error("UI_SMOKE_FAILED " + JSON.stringify(appState)); Qt.quit(); return }
                 let args = Qt.application.arguments, screenshot = args.indexOf("--screenshot")
                 if (screenshot >= 0) page.grabToImage(function(result) { if (!result.saveToFile(args[screenshot + 1])) console.error("SCREENSHOT_FAILED"); console.log("QML_READY queue=" + queueList.count); Qt.quit() })
                 else { console.log("QML_READY queue=" + queueList.count); Qt.quit() }
