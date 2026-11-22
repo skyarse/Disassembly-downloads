@@ -1363,7 +1363,7 @@ impl Engine {
     fn execute(&mut self, request: Value) -> Result<()> {
         self.rule_test.clear();
         match request["op"].as_str().unwrap_or("") {
-            "init" | "scan" | "tick" => self.tick_at(Instant::now())?,
+            "init" | "scan" | "tick" | "tray_tick" => self.tick_at(Instant::now())?,
             "set_theme" => {
                 let theme = request["theme"].as_str().context("Не указана тема")?;
                 ensure!(
@@ -1671,6 +1671,13 @@ impl Engine {
             .map_err(anyhow::Error::from)
             .and_then(|r| self.execute(r));
         let error = result.err().map(|e| format!("{e:#}")).unwrap_or_default();
+        if operation == "tray_tick" {
+            return json!({
+                "config": {"mode": self.config.mode, "root": self.config.root},
+                "first_run": self.first_run, "operation": operation, "error": error
+            })
+            .to_string();
+        }
         json!({"config":self.config,"first_run":self.first_run,"queue":self.queue,"history":self.history().unwrap_or_default(),"source_errors": self.source_errors,"plan":self.plan_view(),"duplicates":self.duplicates,"message":self.message,"error":error,"matches":self.rule_test,"request_id":request_id,"operation":operation}).to_string()
     }
 }
