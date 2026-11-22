@@ -3,7 +3,6 @@ import QtQuick.Controls
 import QtQuick.Layouts
 import QtQuick.Dialogs
 import Qt.labs.folderlistmodel
-import Qt.labs.platform as Platform
 import net.skyarse.DownloadsTriage
 
 ApplicationWindow {
@@ -12,14 +11,17 @@ ApplicationWindow {
     height: 800
     minimumWidth: 880
     minimumHeight: 640
-    visible: !Qt.application.arguments.includes("--background") || !tray.available
+    required property var host
+    readonly property var backend: host.backend
+    readonly property bool canUnload: !busy && !rootDirty && !ruleDialog.visible && !categoryDialog.visible && !exclusionDialog.visible && !moveConfirm.visible && !undoDialog.visible && !folders.visible && !importFile.visible && !exportFile.visible && !autoConfirm.visible && !importConfirm.visible && !duplicateDialog.visible && Object.keys(selected).length === 0 && Object.keys(destinations).length === 0
+    onCanUnloadChanged: if (!visible && canUnload && host) Qt.callLater(host.unloadClosedWindow)
+    visible: true
     title: "Загрузки на разбор"
     font.family: "Sans Serif"
     font.pixelSize: 14
     property var appState: ({queue: [], history: [], matches: [], first_run: true})
     property var config: ({root: "", root_automatic: true, sources: [], only_new: false, categories: [], rules: [], exclusions: [], mode: "manual", theme: "system", autostart: false})
     property bool busy: false
-    property int requestSequence: 0
     property int pendingRequest: -1
     property string pendingOperation: ""
     property int receivedReplies: 0
@@ -33,7 +35,6 @@ ApplicationWindow {
     property var undoRequest: null
     property var pendingDecision: null
     property bool rootDirty: false
-    property bool quitting: false
     property string notice: "Загрузка настроек…"
     property string themeChoice: "system"
     readonly property string mode: config.mode || "manual"
@@ -79,7 +80,7 @@ ApplicationWindow {
     QtObject { id: tabs; property int currentIndex: 0 }
     function send(command) {
         if (busy) return false
-        command.request_id = ++requestSequence
+        command.request_id = ++host.requestSequence
         pendingRequest = command.request_id
         pendingOperation = command.op
         busy = true
@@ -89,7 +90,7 @@ ApplicationWindow {
     function showQueue() { tabs.currentIndex = 0; window.show(); window.raise(); window.requestActivate() }
     function setMode(value) {
         if (busy && value !== "automatic") {
-            let command = {op: "set_mode", mode: value, request_id: ++requestSequence}
+            let command = {op: "set_mode", mode: value, request_id: ++host.requestSequence}
             pendingRequest = command.request_id
             pendingOperation = command.op
             backend.request(JSON.stringify(command))
@@ -369,13 +370,7 @@ ApplicationWindow {
         }
     }
 
-    Backend {
-        id: backend
-        onFinished: window.receive(backend.response)
-    }
-    function receive(value) {
-        let response
-        try { response = JSON.parse(value) } catch (error) { busy = false; notice = "Не удалось прочитать ответ: " + error; return }
+    function receive(response) {
         receivedReplies += 1
         let wasFirstRun = !!appState.first_run
         let hadError = hasError
@@ -420,24 +415,12 @@ ApplicationWindow {
         if (heightIndex >= 0) window.height = Number(args[heightIndex + 1])
         send({op: "init"})
     }
-    Timer { interval: 100; running: true; repeat: true; onTriggered: backend.poll() }
-    onClosing: function(close) {
-        if (tray.available && !quitting) { close.accepted = false; window.hide() }
-    }
-    Platform.SystemTrayIcon {
-        id: tray
-        visible: available
-        icon.source: "qrc:/icons/app.svg"
-        tooltip: "Загрузки на разбор · " + (mode === "automatic" ? "автоматически" : mode === "paused" ? "пауза" : "вручную")
-        onActivated: function(reason) { if (reason === Platform.SystemTrayIcon.Trigger || reason === Platform.SystemTrayIcon.DoubleClick) showQueue() }
-        menu: Platform.Menu {
-            Platform.MenuItem { text: "Открыть очередь"; onTriggered: showQueue() }
-            Platform.MenuItem { text: "Открыть папку загрузок"; enabled: !appState.first_run; onTriggered: Qt.openUrlExternally(folderUrl(config.root)) }
-            Platform.MenuSeparator {}
-            Platform.MenuItem { text: mode === "automatic" ? "Приостановить сортировку" : "Продолжить автоматически"; enabled: !appState.first_run && (!busy || mode === "automatic"); onTriggered: mode === "automatic" ? setMode("paused") : requestAutomatic() }
-            Platform.MenuSeparator {}
-            Platform.MenuItem { text: "Завершить работу"; onTriggered: { quitting = true; Qt.quit() } }
-        }
+    onClosing: function(event) {
+        if (host.trayAvailable) {
+            event.accepted = false
+            hide()
+            Qt.callLater(host.unloadClosedWindow)
+        } else Qt.quit()
     }
     FolderDialog {
         id: folders
@@ -1042,7 +1025,7 @@ ApplicationWindow {
                                 Small { text: "В автоматическом режиме знакомые файлы с действием «Переместить» разбираются сами. Остальные остаются в очереди. Проверка выполняется каждые 15 секунд."; Layout.fillWidth: true }
                                 Small { text: "Перед переносом ждём минуту без изменений. Для загрузчиков, которые могут надолго приостанавливаться, выбирайте папку завершённых загрузок."; Layout.fillWidth: true }
                                 Check { text: "Запускать при входе в систему"; enabled: !busy && !appState.first_run; checked: !!config.autostart; onToggled: send({op: "set_autostart", enabled: checked}) }
-                                Small { text: tray.available ? "После закрытия окна приложение продолжит работу в трее." : "В этой среде трей недоступен: для фоновой работы оставьте окно открытым."; Layout.fillWidth: true }
+                                Small { text: host.trayAvailable ? "После закрытия окна приложение продолжит работу в трее." : "В этой среде трей недоступен: для фоновой работы оставьте окно открытым."; Layout.fillWidth: true }
                             }
                             Card {
                                 Layout.fillWidth: true
@@ -1145,7 +1128,7 @@ ApplicationWindow {
             } else if (step === 5) {
                 importFile.close()
                 console.log("UI_DIALOGS_READY")
-                if (tray.available) {
+                if (host.trayAvailable) {
                     window.close()
                     if (window.visible) { console.error("UI_SMOKE_FAILED close_to_tray"); Qt.quit(); return }
                     showQueue()

@@ -143,3 +143,52 @@ rg 'UI_TRAY_READY' "$smoke_root/qt.log"
 fi
 test -s "$smoke_root/tray-item"
 if rg 'failed to load|Failed to load|is not installed|ReferenceError|TypeError|Binding loop|Cannot assign|SCREENSHOT_FAILED|UI_SMOKE_FAILED' "$smoke_root/qt.log"; then exit 1; fi
+
+if [[ "$smoke_case" == "automation" ]]; then
+    python3 - <<'TRAY_SETTINGS'
+import json, os, pathlib
+path = pathlib.Path(os.environ["XDG_CONFIG_HOME"]) / "downloads-triage/settings.json"
+config = json.loads(path.read_text())
+config["mode"] = "automatic"
+path.write_text(json.dumps(config))
+TRAY_SETTINGS
+    rm -f "$smoke_root/tray-item"
+    "$@" --background --tray-lifecycle-test > "$smoke_root/lifecycle.log" 2>&1 &
+    smoke_pid=$!
+    activate_tray() {
+        local item
+        item=$(cat "$smoke_root/tray-item")
+        dbus-send --session --print-reply --dest="${item%%/*}" "/${item#*/}" org.kde.StatusNotifierItem.Activate int32:0 int32:0 >/dev/null
+    }
+    record_memory() {
+        local item pid
+        item=$(cat "$smoke_root/tray-item")
+        pid=$(dbus-send --session --print-reply --dest=org.freedesktop.DBus /org/freedesktop/DBus org.freedesktop.DBus.GetConnectionUnixProcessID "string:${item%%/*}" | awk '/uint32/ {print $2}')
+        awk -v phase="$1" '/^Pss:/ {print "TRAY_MEMORY",phase,$2,"KiB PSS"}' "/proc/$pid/smaps_rollup"
+    }
+    wait_for() {
+        for ((attempt=0; attempt<100; attempt++)); do
+            if "$@"; then return; fi
+            if ! kill -0 "$smoke_pid" 2>/dev/null; then break; fi
+            sleep 1
+        done
+        cat "$smoke_root/lifecycle.log"
+        return 1
+    }
+    wait_for rg -q TRAY_ONLY_TICK "$smoke_root/lifecycle.log"
+    wait_for test -s "$smoke_root/tray-item"
+    record_memory cold
+    activate_tray
+    wait_for rg -q TRAY_WINDOW_OPEN "$smoke_root/lifecycle.log"
+    record_memory open
+    activate_tray
+    wait_for rg -q TRAY_WINDOW_UNLOADED "$smoke_root/lifecycle.log"
+    printf '%s' 'tray sorting fixture' > "$smoke_root/Downloads/tray-sort.png"
+    wait_for test -f "$smoke_root/Downloads/Картинки/tray-sort.png"
+    record_memory closed
+    activate_tray
+    wait_for rg -q TRAY_REOPENED_WITH_HISTORY "$smoke_root/lifecycle.log"
+    wait "$smoke_pid"
+    smoke_pid=""
+    cat "$smoke_root/lifecycle.log"
+fi

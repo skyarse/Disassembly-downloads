@@ -14,7 +14,7 @@ fn main() {
         std::process::exit(1)
     };
     engine.load(&QUrl::from(
-        "qrc:/qt/qml/net/skyarse/DownloadsTriage/qml/Main.qml",
+        "qrc:/qt/qml/net/skyarse/DownloadsTriage/qml/TrayHost.qml",
     ));
     if let Some(app) = app.as_mut() {
         app.exec();

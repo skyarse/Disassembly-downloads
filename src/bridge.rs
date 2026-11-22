@@ -27,6 +27,8 @@ pub mod ffi {
         fn request(self: Pin<&mut Self>, command: &QString);
         #[qinvokable]
         fn poll(self: Pin<&mut Self>);
+        #[qinvokable]
+        fn watching(self: Pin<&mut Self>, open: bool);
         #[qsignal]
         fn finished(self: Pin<&mut Self>);
     }
@@ -37,12 +39,15 @@ pub struct BackendRust {
     sender: mpsc::SyncSender<String>,
     receiver: mpsc::Receiver<String>,
     pause_guard: Arc<AtomicBool>,
+    window_open: Arc<AtomicBool>,
 }
 impl Default for BackendRust {
     fn default() -> Self {
         let (sender, commands) = mpsc::sync_channel::<String>(8);
         let (results, receiver) = mpsc::channel();
         let pause_guard = Arc::new(AtomicBool::new(false));
+        let window_open = Arc::new(AtomicBool::new(false));
+        let worker_window = window_open.clone();
         let worker_guard = pause_guard.clone();
         std::thread::spawn(move || {
             let mut engine = crate::core::Engine::open_default();
@@ -61,7 +66,11 @@ impl Default for BackendRust {
                         if engine.is_err() {
                             continue;
                         }
-                        "{\"op\":\"tick\"}".to_string()
+                        if worker_window.load(Ordering::Acquire) {
+                            r#"{"op":"tick"}"#.to_string()
+                        } else {
+                            r#"{"op":"tray_tick"}"#.to_string()
+                        }
                     }
                     Err(mpsc::RecvTimeoutError::Disconnected) => break,
                 };
@@ -78,7 +87,10 @@ impl Default for BackendRust {
                 if results.send(response).is_err() {
                     break;
                 }
-                if matches!(operation["op"].as_str(), Some("tick" | "scan" | "init")) {
+                if matches!(
+                    operation["op"].as_str(),
+                    Some("tick" | "tray_tick" | "scan" | "init")
+                ) {
                     next_tick = Instant::now() + interval;
                 }
             }
@@ -88,10 +100,15 @@ impl Default for BackendRust {
             sender,
             receiver,
             pause_guard,
+            window_open,
         }
     }
 }
 impl ffi::Backend {
+    pub fn watching(self: Pin<&mut Self>, open: bool) {
+        self.rust().window_open.store(open, Ordering::Release);
+    }
+
     pub fn request(mut self: Pin<&mut Self>, command: &QString) {
         let request =
             serde_json::from_str::<serde_json::Value>(&command.to_string()).unwrap_or_default();
@@ -111,6 +128,7 @@ impl ffi::Backend {
             };
             self.as_mut().set_response(QString::from(value.as_str()));
             self.as_mut().finished();
+            self.as_mut().set_response(QString::default());
         }
     }
 }

@@ -17,6 +17,7 @@ inline std::unique_ptr<QGuiApplication> create_application(rust::Vec<rust::Strin
     argv.push_back(nullptr);
     argc = static_cast<int>(storage.size());
     auto app = std::make_unique<QApplication>(argc, argv.data());
+    app->setQuitOnLastWindowClosed(false);
     QGuiApplication::setDesktopFileName(QStringLiteral("net.skyarse.DownloadsTriage"));
     QGuiApplication::setApplicationDisplayName(QStringLiteral("Загрузки на разбор"));
     QCoreApplication::setApplicationVersion(QString::fromUtf8(version.data(), static_cast<qsizetype>(version.size())));
