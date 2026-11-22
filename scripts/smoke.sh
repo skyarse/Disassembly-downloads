@@ -160,6 +160,12 @@ TRAY_SETTINGS
         item=$(cat "$smoke_root/tray-item")
         dbus-send --session --print-reply --dest="${item%%/*}" "/${item#*/}" org.kde.StatusNotifierItem.Activate int32:0 int32:0 >/dev/null
     }
+    record_memory() {
+        local item pid
+        item=$(cat "$smoke_root/tray-item")
+        pid=$(dbus-send --session --print-reply --dest=org.freedesktop.DBus /org/freedesktop/DBus org.freedesktop.DBus.GetConnectionUnixProcessID "string:${item%%/*}" | awk '/uint32/ {print $2}')
+        awk -v phase="$1" '/^Pss:/ {print "TRAY_MEMORY",phase,$2,"KiB PSS"}' "/proc/$pid/smaps_rollup"
+    }
     wait_for() {
         for ((attempt=0; attempt<100; attempt++)); do
             if "$@"; then return; fi
@@ -171,10 +177,15 @@ TRAY_SETTINGS
     }
     wait_for rg -q TRAY_ONLY_TICK "$smoke_root/lifecycle.log"
     wait_for test -s "$smoke_root/tray-item"
+    record_memory cold
+    activate_tray
+    wait_for rg -q TRAY_WINDOW_OPEN "$smoke_root/lifecycle.log"
+    record_memory open
     activate_tray
     wait_for rg -q TRAY_WINDOW_UNLOADED "$smoke_root/lifecycle.log"
     printf '%s' 'tray sorting fixture' > "$smoke_root/Downloads/tray-sort.png"
     wait_for test -f "$smoke_root/Downloads/Картинки/tray-sort.png"
+    record_memory closed
     activate_tray
     wait_for rg -q TRAY_REOPENED_WITH_HISTORY "$smoke_root/lifecycle.log"
     wait "$smoke_pid"
