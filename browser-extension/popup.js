@@ -19,10 +19,32 @@ function webAddress(value) {
     }
 }
 
+class ConnectionError extends Error {}
+
 async function request(input) {
-    const reply = await browser.runtime.sendNativeMessage(host, input);
-    if (!reply?.ok) throw new Error(reply?.message);
+    let reply;
+    try {
+        reply = await browser.runtime.sendNativeMessage(host, input);
+    } catch (error) {
+        throw new ConnectionError(error?.message || "");
+    }
+    if (!reply || typeof reply.ok !== "boolean") {
+        throw new ConnectionError("Приложение вернуло непонятный ответ.");
+    }
+    if (!reply.ok) throw new Error(reply.message || "Приложение не смогло выполнить запрос.");
     return reply;
+}
+
+function describeError(error, title) {
+    const detail = error?.message;
+    if (error instanceof ConnectionError) {
+        const hint = "В настройках приложения нажмите «Восстановить связь с браузером».";
+        if (title) summary.textContent = "Не удалось связаться с «Загрузками на разбор»";
+        showMessage(detail ? hint + " Firefox: " + detail : hint);
+    } else {
+        if (title) summary.textContent = "Не удалось получить список загрузок";
+        showMessage(detail || "Приложение не смогло выполнить запрос.");
+    }
 }
 
 function markUnavailable(button) {
@@ -57,7 +79,7 @@ function render(page, files) {
                     const result = await request({ action: "show_download", page, id: file.id });
                     if (!result.available) markUnavailable(button);
                 } catch (error) {
-                    showMessage(error.message || "Не удалось связаться с «Загрузками на разбор».");
+                    describeError(error, false);
                 } finally {
                     button.disabled = false;
                 }
@@ -111,9 +133,8 @@ async function start() {
             return;
         }
         await load(page);
-    } catch {
-        summary.textContent = "Не удалось связаться с «Загрузками на разбор»";
-        showMessage("Проверьте связь с браузером в настройках приложения.");
+    } catch (error) {
+        describeError(error, true);
     }
 }
 

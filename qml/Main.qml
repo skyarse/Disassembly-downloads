@@ -1058,6 +1058,11 @@ ApplicationWindow {
                                 }
                                 Small { text: "Расширение Firefox, Chrome или Chromium передаёт источники завершённых загрузок. Ссылки хранятся на этом компьютере."; Layout.fillWidth: true }
                                 ActionButton {
+                                    text: "Восстановить связь с браузером"
+                                    enabled: !busy && !!appState.download_origins
+                                    onClicked: send({op: "set_download_origins", enabled: true})
+                                }
+                                ActionButton {
                                     text: "Открыть папку расширений"
                                     enabled: !!appState.download_origins && !!appState.browser_extensions
                                     onClicked: Qt.openUrlExternally(folderUrl(appState.browser_extensions))

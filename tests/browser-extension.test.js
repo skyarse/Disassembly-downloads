@@ -162,4 +162,12 @@ test("popup uses Firefox history for legacy paths and separates host failures", 
     const failed = await openPopup(page, async () => { throw new Error("host missing"); });
     assert.equal(failed.summary.textContent, "Не удалось связаться с «Загрузками на разбор»");
     assert.equal(failed.files.children.length, 0);
+    assert.match(failed.message.textContent, /host missing/);
+
+    const rejected = await openPopup(page, async () => ({
+        ok: false,
+        message: "Запоминание источников отключено",
+    }));
+    assert.equal(rejected.summary.textContent, "Не удалось получить список загрузок");
+    assert.equal(rejected.message.textContent, "Запоминание источников отключено");
 });

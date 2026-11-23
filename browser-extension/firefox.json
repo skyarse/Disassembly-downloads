@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Загрузки на разбор",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Передаёт путь и ссылки завершённых загрузок локальному приложению для открытия источника из Dolphin.",
   "permissions": ["downloads", "nativeMessaging", "activeTab"],
   "background": {"scripts": ["background.js"]},

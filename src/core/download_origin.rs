@@ -264,9 +264,10 @@ pub(crate) fn enabled() -> bool {
     menu().is_ok_and(|path| managed(&path))
 }
 
-pub(crate) fn set_enabled(executable: &Path, enable: bool) -> Result<()> {
+pub(crate) fn set_enabled(enable: bool) -> Result<()> {
     let path = menu()?;
     if enable {
+        let executable = crate::browser_bridge::executable()?;
         ensure!(
             !crate::browser_bridge::path_exists(&path)? || managed(&path),
             "Существующая запись Dolphin создана другим приложением"
@@ -275,24 +276,28 @@ pub(crate) fn set_enabled(executable: &Path, enable: bool) -> Result<()> {
             executable.is_absolute() && executable.is_file(),
             "Не найден исполняемый файл приложения"
         );
-        crate::browser_bridge::install(executable)?;
+        crate::browser_bridge::install(&executable)?;
+        return write_menu(&path, &executable);
     }
-    write_menu(&path, executable, enable)
+    remove_menu(&path)
 }
 
-fn write_menu(target: &Path, executable: &Path, enable: bool) -> Result<()> {
+fn remove_menu(target: &Path) -> Result<()> {
     if crate::browser_bridge::path_exists(target)? {
         ensure!(
             managed(target),
             "Существующая запись Dolphin создана другим приложением"
         );
-        if !enable {
-            return Ok(fs::remove_file(target)?);
-        }
+        fs::remove_file(target)?;
     }
-    if !enable {
-        return Ok(());
-    }
+    Ok(())
+}
+
+fn write_menu(target: &Path, executable: &Path) -> Result<()> {
+    ensure!(
+        !crate::browser_bridge::path_exists(target)? || managed(target),
+        "Существующая запись Dolphin создана другим приложением"
+    );
     let executable = crate::autostart::executable_argument(executable)?;
     let text = format!(
         r#"[Desktop Entry]
@@ -316,7 +321,7 @@ Icon=insert-link
 Exec=/usr/bin/env -- {executable} --open-download-file-url %f
 "#
     );
-    crate::browser_bridge::write_atomic(target, text.as_bytes(), 0o700)
+    crate::browser_bridge::refresh_file(target, text.as_bytes(), 0o700)
 }
 
 #[cfg(test)]
@@ -366,7 +371,7 @@ mod tests {
         let desktop = directory.path().join(MENU_NAME);
         let application = directory.path().join("Downloads Triage %.AppImage");
         fs::write(&application, "").unwrap();
-        write_menu(&desktop, &application, true).unwrap();
+        write_menu(&desktop, &application).unwrap();
         let content = fs::read_to_string(&desktop).unwrap();
         assert!(content.contains("MimeType=all/allfiles;"));
         assert!(content.contains("X-KDE-Protocols=file"));
@@ -375,9 +380,9 @@ mod tests {
             fs::metadata(&desktop).unwrap().permissions().mode() & 0o777,
             0o700
         );
-        write_menu(&desktop, &application, false).unwrap();
+        remove_menu(&desktop).unwrap();
         assert!(!desktop.exists());
         fs::write(&desktop, "user data").unwrap();
-        assert!(write_menu(&desktop, &application, true).is_err());
+        assert!(write_menu(&desktop, &application).is_err());
     }
 }

@@ -591,6 +591,11 @@ impl Engine {
             .join("downloads-triage");
         let mut engine = Self::open(&config, &state)?;
         engine.config.autostart = crate::autostart::enabled(&engine.autostart_directory()?);
+        if download_origin::enabled() {
+            if let Err(error) = download_origin::set_enabled(true) {
+                eprintln!("Не удалось обновить связь с браузером: {error:#}");
+            }
+        }
         Ok(engine)
     }
     fn open(config_directory: &Path, state: &Path) -> Result<Self> {
@@ -1434,11 +1439,10 @@ impl Engine {
                 let enabled = request["enabled"]
                     .as_bool()
                     .context("Не указан режим записи источников")?;
-                let executable = match std::env::var_os("APPIMAGE") {
-                    Some(path) => PathBuf::from(path),
-                    None => std::env::current_exe()?,
-                };
-                download_origin::set_enabled(&executable, enabled)?;
+                download_origin::set_enabled(enabled)?;
+                if enabled {
+                    self.message = "Связь с браузером настроена".into();
+                }
             }
             "set_autostart" => {
                 ensure!(!self.first_run, "Сначала сохраните папку загрузок");

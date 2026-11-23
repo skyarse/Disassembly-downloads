@@ -4,7 +4,7 @@ use serde_json::{json, Value};
 use std::{
     fs::{self, OpenOptions},
     io::{Read, Write},
-    os::unix::fs::OpenOptionsExt,
+    os::unix::fs::{OpenOptionsExt, PermissionsExt},
     path::{Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -45,6 +45,13 @@ enum Query {
 enum Request {
     Query(Query),
     Download(DownloadMessage),
+}
+
+pub fn executable() -> Result<PathBuf> {
+    match std::env::var_os("APPIMAGE") {
+        Some(path) => Ok(PathBuf::from(path)),
+        None => Ok(std::env::current_exe()?),
+    }
 }
 
 pub fn extension_directory() -> Result<PathBuf> {
@@ -145,8 +152,8 @@ fn install_in(home: &Path, config: &Path, data: &Path, executable: &Path) -> Res
         ),
     ] {
         let directory = extensions.join(browser);
-        write_atomic(&directory.join("manifest.json"), manifest, 0o600)?;
-        write_atomic(&directory.join("background.js"), background, 0o600)?;
+        refresh_file(&directory.join("manifest.json"), manifest, 0o600)?;
+        refresh_file(&directory.join("background.js"), background, 0o600)?;
     }
     for (name, content) in [
         (
@@ -162,11 +169,11 @@ fn install_in(home: &Path, config: &Path, data: &Path, executable: &Path) -> Res
             include_bytes!("../browser-extension/popup.css").as_slice(),
         ),
     ] {
-        write_atomic(&extensions.join("firefox").join(name), content, 0o600)?;
+        refresh_file(&extensions.join("firefox").join(name), content, 0o600)?;
     }
-    write_atomic(&wrapper, script.as_bytes(), 0o700)?;
+    refresh_file(&wrapper, script.as_bytes(), 0o700)?;
     for (path, manifest) in manifests {
-        write_atomic(&path, &serde_json::to_vec_pretty(&manifest)?, 0o600)?;
+        refresh_file(&path, &serde_json::to_vec_pretty(&manifest)?, 0o600)?;
     }
     Ok(())
 }
@@ -177,6 +184,16 @@ pub(crate) fn path_exists(path: &Path) -> Result<bool> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
         Err(error) => Err(error.into()),
     }
+}
+
+pub(crate) fn refresh_file(path: &Path, content: &[u8], mode: u32) -> Result<()> {
+    if fs::symlink_metadata(path)
+        .is_ok_and(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o777 == mode)
+        && fs::read(path).is_ok_and(|existing| existing == content)
+    {
+        return Ok(());
+    }
+    write_atomic(path, content, mode)
 }
 
 pub(crate) fn write_atomic(path: &Path, bytes: &[u8], mode: u32) -> Result<()> {
@@ -251,7 +268,6 @@ fn handle(request: Request) -> Result<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::os::unix::fs::PermissionsExt;
 
     #[test]
     fn browser_messages_are_framed_and_bounded() {
@@ -265,6 +281,39 @@ mod tests {
         assert_eq!(message.size, Some(42));
         assert!(read_message((MAX_MESSAGE_SIZE as u32 + 1).to_ne_bytes().as_slice()).is_err());
         assert!(read_message(&frame[..frame.len() - 1]).is_err());
+    }
+
+    #[test]
+    fn installation_updates_launcher_after_appimage_moves() {
+        let temp = tempfile::tempdir().unwrap();
+        let home = temp.path().join("home");
+        let config = temp.path().join("config");
+        let data = temp.path().join("data");
+        let old = temp.path().join("Old AppImage");
+        let new = temp.path().join("New AppImage");
+        let launcher = data.join("browser-bridge");
+
+        fs::write(&old, b"#!/bin/sh\nprintf old").unwrap();
+        fs::write(&new, b"#!/bin/sh\nprintf new").unwrap();
+        fs::set_permissions(&new, fs::Permissions::from_mode(0o700)).unwrap();
+        install_in(&home, &config, &data, &old).unwrap();
+        fs::remove_file(&old).unwrap();
+        assert!(!std::process::Command::new(&launcher)
+            .output()
+            .unwrap()
+            .status
+            .success());
+        install_in(&home, &config, &data, &new).unwrap();
+        let repaired = std::process::Command::new(&launcher).output().unwrap();
+        assert!(repaired.status.success());
+        assert_eq!(repaired.stdout, b"new");
+
+        let changed = fs::metadata(&launcher).unwrap().modified().unwrap();
+        install_in(&home, &config, &data, &new).unwrap();
+        assert_eq!(
+            fs::metadata(&launcher).unwrap().modified().unwrap(),
+            changed
+        );
     }
 
     #[test]
