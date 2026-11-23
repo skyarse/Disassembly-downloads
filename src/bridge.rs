@@ -15,6 +15,11 @@ pub mod ffi {
         include!("cxx-qt-lib/qstring.h");
         type QString = cxx_qt_lib::QString;
         include!("application.h");
+        include!("window_process.h");
+        fn show_window_process(tray: bool);
+        fn window_running() -> bool;
+        fn next_window_command() -> QString;
+        fn send_window_message(message: &QString);
         type QGuiApplication = cxx_qt_lib::QGuiApplication;
         fn create_application(arguments: Vec<String>, version: &str) -> UniquePtr<QGuiApplication>;
     }
@@ -30,8 +35,17 @@ pub mod ffi {
         #[qinvokable]
         fn watching(self: Pin<&mut Self>, open: bool);
         #[qinvokable]
-        #[cxx_name = "trimHeap"]
-        fn trim_heap(self: Pin<&mut Self>);
+        #[cxx_name = "showWindow"]
+        fn show_window(self: Pin<&mut Self>, tray: bool);
+        #[qinvokable]
+        #[cxx_name = "windowRunning"]
+        fn has_window(self: &Self) -> bool;
+        #[qinvokable]
+        #[cxx_name = "sendWindow"]
+        fn send_window(self: &Self, message: &QString);
+        #[qinvokable]
+        #[cxx_name = "readWindow"]
+        fn read_window(self: &Self) -> QString;
         #[qsignal]
         fn finished(self: Pin<&mut Self>);
     }
@@ -108,11 +122,20 @@ impl Default for BackendRust {
     }
 }
 impl ffi::Backend {
-    pub fn trim_heap(self: Pin<&mut Self>) {
-        #[cfg(all(target_os = "linux", target_env = "gnu"))]
-        unsafe {
-            libc::malloc_trim(0);
-        }
+    pub fn show_window(self: Pin<&mut Self>, tray: bool) {
+        ffi::show_window_process(tray);
+    }
+
+    pub fn has_window(&self) -> bool {
+        ffi::window_running()
+    }
+
+    pub fn send_window(&self, message: &QString) {
+        ffi::send_window_message(message);
+    }
+
+    pub fn read_window(&self) -> QString {
+        ffi::next_window_command()
     }
 
     pub fn watching(self: Pin<&mut Self>, open: bool) {

@@ -164,7 +164,11 @@ TRAY_SETTINGS
         local item pid
         item=$(cat "$smoke_root/tray-item")
         pid=$(dbus-send --session --print-reply --dest=org.freedesktop.DBus /org/freedesktop/DBus org.freedesktop.DBus.GetConnectionUnixProcessID "string:${item%%/*}" | awk '/uint32/ {print $2}')
-        awk -v phase="$1" '/^Pss:/ {print "TRAY_MEMORY",phase,$2,"KiB PSS"}' "/proc/$pid/smaps_rollup"
+        local child maps=("/proc/$pid/smaps_rollup")
+        for child in $(cat "/proc/$pid/task/$pid/children"); do
+            if [[ -r "/proc/$child/smaps_rollup" ]]; then maps+=("/proc/$child/smaps_rollup"); fi
+        done
+        awk -v phase="$1" '/^Pss:/ {total += $2} END {print "TRAY_MEMORY",phase,total,"KiB PSS"}' "${maps[@]}"
     }
     wait_for() {
         for ((attempt=0; attempt<100; attempt++)); do

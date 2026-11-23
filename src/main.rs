@@ -1,6 +1,7 @@
 mod autostart;
 mod bridge;
 mod core;
+mod window_link;
 
 use cxx_qt_lib::{QQmlApplicationEngine, QUrl};
 fn main() {
@@ -13,9 +14,12 @@ fn main() {
     let Some(engine) = engine.as_mut() else {
         std::process::exit(1)
     };
-    engine.load(&QUrl::from(
-        "qrc:/qt/qml/net/skyarse/DownloadsTriage/qml/TrayHost.qml",
-    ));
+    let entry = if std::env::args().any(|arg| arg == "--queue-window") {
+        "qrc:/qt/qml/net/skyarse/DownloadsTriage/qml/Main.qml"
+    } else {
+        "qrc:/qt/qml/net/skyarse/DownloadsTriage/qml/TrayHost.qml"
+    };
+    engine.load(&QUrl::from(entry));
     if let Some(app) = app.as_mut() {
         app.exec();
     }
