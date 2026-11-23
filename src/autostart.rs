@@ -13,7 +13,7 @@ pub fn enabled(directory: &Path) -> bool {
         .is_ok_and(|text| text.lines().any(|line| line == MARKER))
 }
 
-fn executable_argument(path: &Path) -> Result<String> {
+pub(crate) fn executable_argument(path: &Path) -> Result<String> {
     let value = path
         .to_str()
         .context("Путь приложения должен быть в UTF-8")?;

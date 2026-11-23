@@ -56,6 +56,8 @@ jobs:
           cargo metadata --locked --format-version=1 > /dev/null
       - name: Test file operations
         run: cargo test --locked
+      - name: Test download source extension
+        run: node --test tests/browser-extension.test.js
       - name: Build desktop application
         run: cargo build --release --locked
       - name: Smoke test QML

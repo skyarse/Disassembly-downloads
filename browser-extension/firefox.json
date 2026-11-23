@@ -1,0 +1,17 @@
+{
+  "manifest_version": 3,
+  "name": "Загрузки на разбор",
+  "version": "0.1.1",
+  "description": "Передаёт путь и ссылки завершённых загрузок локальному приложению для открытия источника из Dolphin.",
+  "permissions": ["downloads", "nativeMessaging", "activeTab"],
+  "background": {"scripts": ["background.js"]},
+  "action": {"default_title": "Загрузки на разбор", "default_popup": "popup.html"},
+  "incognito": "not_allowed",
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "download-origins@downloads-triage.skyarse.net",
+      "strict_min_version": "140.0",
+      "data_collection_permissions": {"required": ["browsingActivity", "websiteActivity"]}
+    }
+  }
+}

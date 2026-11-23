@@ -283,9 +283,14 @@ impl Engine {
             })();
             match result {
                 Ok(moved) => {
-                    self.db.execute(
-                        "UPDATE operations SET state='moved',snapshot=?2 WHERE id=?1",
-                        params![id, serde_json::to_string(&moved)?],
+                    self.finish_transfer(
+                        *id,
+                        &item.source,
+                        &item.destination,
+                        &item.snapshot,
+                        &moved,
+                        "moved",
+                        "",
                     )?;
                     self.db.execute(
                         "DELETE FROM manual_only WHERE path=?1",
@@ -396,6 +401,7 @@ impl Engine {
             staged.same_content(&published),
             "Итоговая копия не прошла проверку"
         );
+        let _ = super::download_origin::carry(expected, &published);
         expected.verify(source)?;
         rename_noreplace(source, &holding)?;
         let ready = (|| -> Result<()> {

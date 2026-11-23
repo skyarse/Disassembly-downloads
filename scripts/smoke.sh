@@ -164,7 +164,11 @@ TRAY_SETTINGS
         local item pid
         item=$(cat "$smoke_root/tray-item")
         pid=$(dbus-send --session --print-reply --dest=org.freedesktop.DBus /org/freedesktop/DBus org.freedesktop.DBus.GetConnectionUnixProcessID "string:${item%%/*}" | awk '/uint32/ {print $2}')
-        awk -v phase="$1" '/^Pss:/ {print "TRAY_MEMORY",phase,$2,"KiB PSS"}' "/proc/$pid/smaps_rollup"
+        local child maps=("/proc/$pid/smaps_rollup")
+        for child in $(cat "/proc/$pid/task/$pid/children"); do
+            if [[ -r "/proc/$child/smaps_rollup" ]]; then maps+=("/proc/$child/smaps_rollup"); fi
+        done
+        awk -v phase="$1" '/^Pss:/ {total += $2} END {print "TRAY_MEMORY",phase,total,"KiB PSS"}' "${maps[@]}"
     }
     wait_for() {
         for ((attempt=0; attempt<100; attempt++)); do
@@ -178,11 +182,14 @@ TRAY_SETTINGS
     wait_for rg -q TRAY_ONLY_TICK "$smoke_root/lifecycle.log"
     wait_for test -s "$smoke_root/tray-item"
     record_memory cold
-    activate_tray
-    wait_for rg -q TRAY_WINDOW_OPEN "$smoke_root/lifecycle.log"
-    record_memory open
-    activate_tray
-    wait_for rg -q TRAY_WINDOW_UNLOADED "$smoke_root/lifecycle.log"
+    for cycle in {1..10}; do
+        activate_tray
+        wait_for rg -q "TRAY_WINDOW_OPEN ${cycle}$" "$smoke_root/lifecycle.log"
+        record_memory "open-$cycle"
+        activate_tray
+        wait_for rg -q "TRAY_WINDOW_UNLOADED ${cycle}$" "$smoke_root/lifecycle.log"
+        record_memory "closed-$cycle"
+    done
     printf '%s' 'tray sorting fixture' > "$smoke_root/Downloads/tray-sort.png"
     wait_for test -f "$smoke_root/Downloads/Картинки/tray-sort.png"
     record_memory closed

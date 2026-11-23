@@ -9,6 +9,6 @@ fn main() {
     .qt_module("Widgets")
     .include_dir("src")
     .qrc("qml/assets.qrc")
-    .files(["src/bridge.rs"])
+    .files(["src/bridge.rs", "src/window_link.rs"])
     .build();
 }

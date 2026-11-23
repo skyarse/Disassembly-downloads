@@ -11,10 +11,30 @@ ApplicationWindow {
     height: 800
     minimumWidth: 880
     minimumHeight: 640
-    required property var host
-    readonly property var backend: host.backend
+    readonly property bool trayAvailable: Qt.application.arguments.includes("--has-tray")
+    property int requestSequence: 0
+    WindowLink {
+        id: backend
+        onReceived: {
+            let reply = JSON.parse(response)
+            switch (reply.window_action) {
+            case "show": window.showQueue(); break
+            case "close": window.close(); break
+            case "toggle":
+                if (mode === "automatic") setMode("paused")
+                else { window.showQueue(); requestAutomatic() }
+                break
+            case "quit": Qt.quit(); break
+            default: window.receive(reply); break
+            }
+        }
+    }
+    Timer { interval: 50; running: true; repeat: true; onTriggered: backend.poll() }
+    function unloadClosedWindow() {
+        if (!visible && canUnload) Qt.quit()
+    }
     readonly property bool canUnload: !busy && !rootDirty && !ruleDialog.visible && !categoryDialog.visible && !exclusionDialog.visible && !moveConfirm.visible && !undoDialog.visible && !folders.visible && !importFile.visible && !exportFile.visible && !autoConfirm.visible && !importConfirm.visible && !duplicateDialog.visible && Object.keys(selected).length === 0 && Object.keys(destinations).length === 0
-    onCanUnloadChanged: if (!visible && canUnload && host) Qt.callLater(host.unloadClosedWindow)
+    onCanUnloadChanged: if (!visible && canUnload) Qt.callLater(window.unloadClosedWindow)
     visible: true
     title: "Загрузки на разбор"
     font.family: "Sans Serif"
@@ -80,7 +100,7 @@ ApplicationWindow {
     QtObject { id: tabs; property int currentIndex: 0 }
     function send(command) {
         if (busy) return false
-        command.request_id = ++host.requestSequence
+        command.request_id = ++window.requestSequence
         pendingRequest = command.request_id
         pendingOperation = command.op
         busy = true
@@ -90,7 +110,7 @@ ApplicationWindow {
     function showQueue() { tabs.currentIndex = 0; window.show(); window.raise(); window.requestActivate() }
     function setMode(value) {
         if (busy && value !== "automatic") {
-            let command = {op: "set_mode", mode: value, request_id: ++host.requestSequence}
+            let command = {op: "set_mode", mode: value, request_id: ++window.requestSequence}
             pendingRequest = command.request_id
             pendingOperation = command.op
             backend.request(JSON.stringify(command))
@@ -416,10 +436,10 @@ ApplicationWindow {
         send({op: "init"})
     }
     onClosing: function(event) {
-        if (host.trayAvailable) {
+        if (window.trayAvailable) {
             event.accepted = false
             hide()
-            Qt.callLater(host.unloadClosedWindow)
+            Qt.callLater(window.unloadClosedWindow)
         } else Qt.quit()
     }
     FolderDialog {
@@ -1025,7 +1045,23 @@ ApplicationWindow {
                                 Small { text: "В автоматическом режиме знакомые файлы с действием «Переместить» разбираются сами. Остальные остаются в очереди. Проверка выполняется каждые 15 секунд."; Layout.fillWidth: true }
                                 Small { text: "Перед переносом ждём минуту без изменений. Для загрузчиков, которые могут надолго приостанавливаться, выбирайте папку завершённых загрузок."; Layout.fillWidth: true }
                                 Check { text: "Запускать при входе в систему"; enabled: !busy && !appState.first_run; checked: !!config.autostart; onToggled: send({op: "set_autostart", enabled: checked}) }
-                                Small { text: host.trayAvailable ? "После закрытия окна приложение продолжит работу в трее." : "В этой среде трей недоступен: для фоновой работы оставьте окно открытым."; Layout.fillWidth: true }
+                                Small { text: window.trayAvailable ? "После закрытия окна приложение продолжит работу в трее." : "В этой среде трей недоступен: для фоновой работы оставьте окно открытым."; Layout.fillWidth: true }
+                            }
+                            Card {
+                                Layout.fillWidth: true
+                                Heading { text: "Источники загрузок" }
+                                Check {
+                                    text: "Связать расширение браузера с Dolphin"
+                                    enabled: !busy
+                                    checked: !!appState.download_origins
+                                    onToggled: send({op: "set_download_origins", enabled: checked})
+                                }
+                                Small { text: "Расширение Firefox, Chrome или Chromium передаёт источники завершённых загрузок. Ссылки хранятся на этом компьютере."; Layout.fillWidth: true }
+                                ActionButton {
+                                    text: "Открыть папку расширений"
+                                    enabled: !!appState.download_origins && !!appState.browser_extensions
+                                    onClicked: Qt.openUrlExternally(folderUrl(appState.browser_extensions))
+                                }
                             }
                             Card {
                                 Layout.fillWidth: true
@@ -1128,7 +1164,7 @@ ApplicationWindow {
             } else if (step === 5) {
                 importFile.close()
                 console.log("UI_DIALOGS_READY")
-                if (host.trayAvailable) {
+                if (window.trayAvailable) {
                     window.close()
                     if (window.visible) { console.error("UI_SMOKE_FAILED close_to_tray"); Qt.quit(); return }
                     showQueue()
