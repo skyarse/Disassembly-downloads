@@ -29,6 +29,9 @@ pub mod ffi {
         fn poll(self: Pin<&mut Self>);
         #[qinvokable]
         fn watching(self: Pin<&mut Self>, open: bool);
+        #[qinvokable]
+        #[cxx_name = "trimHeap"]
+        fn trim_heap(self: Pin<&mut Self>);
         #[qsignal]
         fn finished(self: Pin<&mut Self>);
     }
@@ -105,6 +108,13 @@ impl Default for BackendRust {
     }
 }
 impl ffi::Backend {
+    pub fn trim_heap(self: Pin<&mut Self>) {
+        #[cfg(all(target_os = "linux", target_env = "gnu"))]
+        unsafe {
+            libc::malloc_trim(0);
+        }
+    }
+
     pub fn watching(self: Pin<&mut Self>, open: bool) {
         self.rust().window_open.store(open, Ordering::Release);
     }

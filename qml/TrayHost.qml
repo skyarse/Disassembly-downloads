@@ -25,7 +25,17 @@ Item {
         if (view.item && !view.item.visible && view.item.canUnload) {
             worker.watching(false)
             view.source = ""
-            if (lifecycleTest && !view.item) console.log("TRAY_WINDOW_UNLOADED")
+            reclaim.restart()
+        }
+    }
+    Timer {
+        id: reclaim
+        interval: 200
+        onTriggered: {
+            if (view.item) return
+            gc()
+            worker.trimHeap()
+            if (host.lifecycleTest) console.log("TRAY_WINDOW_UNLOADED", host.testOpens)
         }
     }
     function toggleMode() {
@@ -69,7 +79,7 @@ Item {
                 view.item.receive(reply)
                 if (host.lifecycleTest && reply.operation === "init") {
                     ++host.testOpens
-                    if (host.testOpens === 1) console.log("TRAY_WINDOW_OPEN")
+                    if (host.testOpens <= 10) console.log("TRAY_WINDOW_OPEN", host.testOpens)
                     else if (reply.history.some(entry => entry.source.endsWith("/tray-sort.png") && entry.state === "moved")) {
                         console.log("TRAY_REOPENED_WITH_HISTORY")
                         Qt.quit()
@@ -90,7 +100,7 @@ Item {
         tooltip: "Загрузки на разбор · " + (host.mode === "automatic" ? "автоматически" : host.mode === "paused" ? "пауза" : "вручную")
         onActivated: function(reason) {
             if (reason !== Platform.SystemTrayIcon.Trigger && reason !== Platform.SystemTrayIcon.DoubleClick) return
-            if (host.lifecycleTest && view.item && host.testOpens === 1) view.item.close()
+            if (host.lifecycleTest && view.item && host.testOpens <= 10) view.item.close()
             else host.openQueue()
         }
         menu: Platform.Menu {

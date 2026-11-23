@@ -178,11 +178,14 @@ TRAY_SETTINGS
     wait_for rg -q TRAY_ONLY_TICK "$smoke_root/lifecycle.log"
     wait_for test -s "$smoke_root/tray-item"
     record_memory cold
-    activate_tray
-    wait_for rg -q TRAY_WINDOW_OPEN "$smoke_root/lifecycle.log"
-    record_memory open
-    activate_tray
-    wait_for rg -q TRAY_WINDOW_UNLOADED "$smoke_root/lifecycle.log"
+    for cycle in {1..10}; do
+        activate_tray
+        wait_for rg -q "TRAY_WINDOW_OPEN ${cycle}$" "$smoke_root/lifecycle.log"
+        record_memory "open-$cycle"
+        activate_tray
+        wait_for rg -q "TRAY_WINDOW_UNLOADED ${cycle}$" "$smoke_root/lifecycle.log"
+        record_memory "closed-$cycle"
+    done
     printf '%s' 'tray sorting fixture' > "$smoke_root/Downloads/tray-sort.png"
     wait_for test -f "$smoke_root/Downloads/Картинки/tray-sort.png"
     record_memory closed
