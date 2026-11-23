@@ -1,0 +1,55 @@
+:root {
+    color-scheme: light dark;
+    font: 13px system-ui, sans-serif;
+    background: Canvas;
+    color: CanvasText;
+}
+
+body {
+    box-sizing: border-box;
+    width: 350px;
+    max-height: 480px;
+    margin: 0;
+    padding: 12px 14px;
+    overflow-y: auto;
+}
+
+h1 {
+    margin: 0;
+    font-size: 15px;
+}
+
+p {
+    margin: 8px 0 0;
+}
+
+ul {
+    margin: 10px 0 0;
+    padding: 0;
+    list-style: none;
+}
+
+li {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 10px;
+    min-height: 36px;
+    padding: 5px 0;
+    border-top: 1px solid color-mix(in srgb, CanvasText 15%, Canvas);
+}
+
+.file-name {
+    overflow-wrap: anywhere;
+}
+
+.unavailable {
+    color: GrayText;
+    font-size: 12px;
+}
+
+button {
+    padding: 5px 8px;
+    font: inherit;
+    cursor: pointer;
+}

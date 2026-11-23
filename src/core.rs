@@ -24,9 +24,11 @@ use std::{
     },
     time::{Duration, Instant},
 };
+pub(crate) mod download_origin;
 mod media;
 mod moves;
 mod payload;
+pub(crate) mod reverse_download;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -617,6 +619,10 @@ impl Engine {
             CREATE TABLE IF NOT EXISTS manual_only(path BLOB PRIMARY KEY);
             CREATE TABLE IF NOT EXISTS deferred(path BLOB PRIMARY KEY);
             CREATE TABLE IF NOT EXISTS existing_files(root BLOB NOT NULL, path BLOB NOT NULL, identity TEXT NOT NULL, PRIMARY KEY(root,path));
+            CREATE TABLE IF NOT EXISTS origin_transfers(
+                id INTEGER PRIMARY KEY, source BLOB NOT NULL, destination BLOB NOT NULL,
+                hash TEXT NOT NULL, before TEXT NOT NULL, after TEXT NOT NULL);
+            CREATE INDEX IF NOT EXISTS origin_transfer_source ON origin_transfers(source, hash, id);
             CREATE TABLE IF NOT EXISTS batches(id INTEGER PRIMARY KEY);
             CREATE TABLE IF NOT EXISTS batch_members(operation INTEGER PRIMARY KEY, batch INTEGER NOT NULL, group_head INTEGER NOT NULL, original_device TEXT NOT NULL);
             CREATE INDEX IF NOT EXISTS member_groups ON batch_members(group_head);
@@ -1271,9 +1277,16 @@ impl Engine {
         )?;
         transaction.commit()?;
         let result = (|| -> Result<()> {
-            self.transfer(id, "undo", &destination, &source, &snapshot, device)?;
-            self.db
-                .execute("UPDATE operations SET state='undone' WHERE id=?1", [id])?;
+            let restored = self.transfer(id, "undo", &destination, &source, &snapshot, device)?;
+            self.finish_transfer(
+                id,
+                &destination,
+                &source,
+                &snapshot,
+                &restored,
+                "undone",
+                "",
+            )?;
             Ok(())
         })();
         if let Err(error) = result {
@@ -1283,6 +1296,31 @@ impl Engine {
             )?;
             return Err(error);
         }
+        Ok(())
+    }
+    fn finish_transfer(
+        &mut self,
+        id: i64,
+        source: &Path,
+        destination: &Path,
+        before: &Snapshot,
+        after: &Snapshot,
+        state: &str,
+        message: &str,
+    ) -> Result<()> {
+        let transaction = self.db.transaction()?;
+        let after_json = serde_json::to_string(after)?;
+        transaction.execute(
+            "UPDATE operations SET state=?2,message=?3,snapshot=?4 WHERE id=?1",
+            params![id, state, message, after_json],
+        )?;
+        if !before.directory {
+            transaction.execute(
+                "INSERT INTO origin_transfers(source,destination,hash,before,after) VALUES(?1,?2,?3,?4,?5)",
+                params![bytes(source), bytes(destination), before.hash, serde_json::to_string(before)?, after_json],
+            )?;
+        }
+        transaction.commit()?;
         Ok(())
     }
     fn recover(&mut self) -> Result<()> {
@@ -1302,7 +1340,12 @@ impl Engine {
             if let Some((done, current, message)) =
                 self.recover_copy(id, direction, old, new, &snapshot)?
             {
-                let updated = if done { completed } else { "needs_review" };
+                if let (true, Some(current)) = (done, current.as_ref()) {
+                    let _ = download_origin::carry(&snapshot, current);
+                    self.finish_transfer(id, old, new, &snapshot, current, completed, &message)?;
+                    continue;
+                }
+                let updated = "needs_review";
                 self.db.execute(
                     "UPDATE operations SET state=?2,message=?3,snapshot=?4 WHERE id=?1",
                     params![
@@ -1341,14 +1384,14 @@ impl Engine {
                     [bytes(old)],
                 )?;
             }
-            let current = if new_state == "moved" && state == "planned" {
-                current.unwrap_or(snapshot)
-            } else {
-                snapshot
-            };
+            if new_state == completed {
+                let current = current.context("Не найден результат восстановленного переноса")?;
+                self.finish_transfer(id, old, new, &snapshot, &current, completed, message)?;
+                continue;
+            }
             self.db.execute(
                 "UPDATE operations SET state=?2,message=?3,snapshot=?4 WHERE id=?1",
-                params![id, new_state, message, serde_json::to_string(&current)?],
+                params![id, new_state, message, encoded],
             )?;
         }
         Ok(())
@@ -1386,6 +1429,16 @@ impl Engine {
                 self.pause_guard
                     .store(self.config.mode != "automatic", Ordering::Release);
                 self.tick_at(Instant::now())?;
+            }
+            "set_download_origins" => {
+                let enabled = request["enabled"]
+                    .as_bool()
+                    .context("Не указан режим записи источников")?;
+                let executable = match std::env::var_os("APPIMAGE") {
+                    Some(path) => PathBuf::from(path),
+                    None => std::env::current_exe()?,
+                };
+                download_origin::set_enabled(&executable, enabled)?;
             }
             "set_autostart" => {
                 ensure!(!self.first_run, "Сначала сохраните папку загрузок");
@@ -1678,7 +1731,7 @@ impl Engine {
             })
             .to_string();
         }
-        json!({"config":self.config,"first_run":self.first_run,"queue":self.queue,"history":self.history().unwrap_or_default(),"source_errors": self.source_errors,"plan":self.plan_view(),"duplicates":self.duplicates,"message":self.message,"error":error,"matches":self.rule_test,"request_id":request_id,"operation":operation}).to_string()
+        json!({"config":self.config,"download_origins":download_origin::enabled(),"browser_extensions":crate::browser_bridge::extension_directory().ok(),"first_run":self.first_run,"queue":self.queue,"history":self.history().unwrap_or_default(),"source_errors": self.source_errors,"plan":self.plan_view(),"duplicates":self.duplicates,"message":self.message,"error":error,"matches":self.rule_test,"request_id":request_id,"operation":operation}).to_string()
     }
 }
 

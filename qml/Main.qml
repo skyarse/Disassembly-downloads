@@ -1049,6 +1049,22 @@ ApplicationWindow {
                             }
                             Card {
                                 Layout.fillWidth: true
+                                Heading { text: "Источники загрузок" }
+                                Check {
+                                    text: "Связать расширение браузера с Dolphin"
+                                    enabled: !busy
+                                    checked: !!appState.download_origins
+                                    onToggled: send({op: "set_download_origins", enabled: checked})
+                                }
+                                Small { text: "Расширение Firefox, Chrome или Chromium передаёт источники завершённых загрузок. Ссылки хранятся на этом компьютере."; Layout.fillWidth: true }
+                                ActionButton {
+                                    text: "Открыть папку расширений"
+                                    enabled: !!appState.download_origins && !!appState.browser_extensions
+                                    onClicked: Qt.openUrlExternally(folderUrl(appState.browser_extensions))
+                                }
+                            }
+                            Card {
+                                Layout.fillWidth: true
                                 RowLayout {
                                     Layout.fillWidth: true
                                     spacing: 18

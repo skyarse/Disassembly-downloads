@@ -1,0 +1,12 @@
+{
+  "manifest_version": 3,
+  "name": "Загрузки на разбор",
+  "version": "0.1.0",
+  "description": "Передаёт путь и ссылки завершённых загрузок локальному приложению для открытия источника из Dolphin.",
+  "minimum_chrome_version": "96",
+  "permissions": ["downloads", "nativeMessaging"],
+  "background": {"service_worker": "background.js"},
+  "action": {"default_title": "Загрузки на разбор"},
+  "incognito": "not_allowed",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEApXnkzS7fDU3KhsB+inFzkWNuiflL7zdUSPWwvwJDSD0AZHsLmkt6wtf7l0PJKeqUv8wScoTzOx4mz8uIk0oXEGLYJNVBBTpC4qOMOEFX/tvPNmwoNKZbXRwHSiJej8aJB/MUB4QRNakx+GZDNgzx0BxZR+nHNJ+Qe+3y6gAL+PXUR67OtE/gXkb/76Y+crJBaVsMyUlTn2GE641sUy6f1psgutENrCBHnucLazoVqnbT1jYQKWQM37m++O4gmJAL4+MTFcsKkavJSCFgtK8nCIwrmzATBBWyEY3Hj7AYzqchxBjqhf9u8zgaUHrGhZrZwRitrSkPdFHg9wQDCH9VdwIDAQAB"
+}
